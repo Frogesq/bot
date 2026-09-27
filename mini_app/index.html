@@ -1632,11 +1632,11 @@ button:active,.btn:active,.nav-item:active,.tab:active,.action:active,.copy-btn:
 
         <div class="section-label" data-section="chat">
             <span>Управление чатом</span>
-            <span class="count">3</span>
+            <span class="count">5</span>
         </div>
         <div class="command-card">
-            <div class="command-name">.mute</div>
-            <div class="command-desc">Заглушить чат. Сообщения собеседника будут удаляться, а не сохраняться.</div>
+            <div class="command-name">.mute [время]</div>
+            <div class="command-desc">Заглушить чат. <code>.mute</code> — навсегда, <code>.mute 5s/5m/5h/5d</code> — на время. Сообщения собеседника будут удаляться.</div>
         </div>
         <div class="command-card">
             <div class="command-name">.unmute</div>
@@ -1646,10 +1646,18 @@ button:active,.btn:active,.nav-item:active,.tab:active,.action:active,.copy-btn:
             <div class="command-name">.spam &lt;число&gt; &lt;текст&gt;</div>
             <div class="command-desc">Отправить одно сообщение несколько раз. Пример: <code>.spam 5 Привет!</code></div>
         </div>
+        <div class="command-card">
+            <div class="command-name">.echo</div>
+            <div class="command-desc">Бот повторяет сообщения собеседника от вашего имени.</div>
+        </div>
+        <div class="command-card">
+            <div class="command-name">.noecho</div>
+            <div class="command-desc">Выключить режим эха.</div>
+        </div>
 
         <div class="section-label" data-section="games">
             <span>Игры</span>
-            <span class="count">2</span>
+            <span class="count">5</span>
         </div>
         <div class="command-card">
             <div class="command-name">.duel</div>
@@ -1659,10 +1667,22 @@ button:active,.btn:active,.nav-item:active,.tab:active,.action:active,.copy-btn:
             <div class="command-name">.ttt</div>
             <div class="command-desc">Игра в крестики-нолики прямо в чате.</div>
         </div>
+        <div class="command-card">
+            <div class="command-name">.chk</div>
+            <div class="command-desc">Шашки с собеседником. Ход: <code>.c3d4</code>. Стоп: <code>.chkstop</code></div>
+        </div>
+        <div class="command-card">
+            <div class="command-name">.word [слово]</div>
+            <div class="command-desc">Игра «слово». <code>.word</code> — случайное, <code>.word секрет</code> — своё. Ход: <code>.ответ</code></div>
+        </div>
+        <div class="command-card">
+            <div class="command-name">.ms</div>
+            <div class="command-desc">Сапёр. Размеры 6×6 / 8×8 / 9×9, бомбы 5 / 8 / авто.</div>
+        </div>
 
         <div class="section-label" data-section="fun">
             <span>Развлечения</span>
-            <span class="count">6</span>
+            <span class="count">8</span>
         </div>
         <div class="command-card">
             <div class="command-name">.anim &lt;текст&gt;</div>
@@ -1685,8 +1705,33 @@ button:active,.btn:active,.nav-item:active,.tab:active,.action:active,.copy-btn:
             <div class="command-desc">Запустить ВИЗУАЛЬНУЮ анимацию процесса удаления аккаунта.</div>
         </div>
         <div class="command-card">
+            <div class="command-name">.dox</div>
+            <div class="command-desc">Шуточная визуальная анимация «докса» (планета Земля и т.п.).</div>
+        </div>
+        <div class="command-card">
+            <div class="command-name">.flip</div>
+            <div class="command-desc">Подбросить виртуальную монетку с анимацией в чате.</div>
+        </div>
+        <div class="command-card">
             <div class="command-name">.id</div>
-            <div class="command-desc">Показать Telegram ID пользователя.</div>
+            <div class="command-desc">Показать Telegram ID собеседника.</div>
+        </div>
+
+        <div class="section-label" data-section="utils">
+            <span>Утилиты</span>
+            <span class="count">3</span>
+        </div>
+        <div class="command-card">
+            <div class="command-name">.gif</div>
+            <div class="command-desc">Ответьте на фото или видео командой — конвертация в GIF.</div>
+        </div>
+        <div class="command-card">
+            <div class="command-name">.ping</div>
+            <div class="command-desc">Техническая информация: Ping, Uptime, RAM.</div>
+        </div>
+        <div class="command-card">
+            <div class="command-name">.calc &lt;выражение&gt;</div>
+            <div class="command-desc">Калькулятор в чате. Пример: <code>.calc 2+2*(10/5)</code></div>
         </div>
     </div>
 
@@ -2357,7 +2402,8 @@ button:active,.btn:active,.nav-item:active,.tab:active,.action:active,.copy-btn:
         function setupCommandSearch() {
             const input = document.getElementById('cmdSearch');
             if (!input) return;
-            input.addEventListener('input', () => {
+            let t = 0;
+            const run = () => {
                 const q = input.value.trim().toLowerCase();
                 document.querySelectorAll('#tab-commands .command-card').forEach(card => {
                     const name = card.querySelector('.command-name')?.textContent.toLowerCase() || '';
@@ -2373,6 +2419,10 @@ button:active,.btn:active,.nav-item:active,.tab:active,.action:active,.copy-btn:
                     }
                     label.style.display = any ? '' : 'none';
                 });
+            };
+            input.addEventListener('input', () => {
+                clearTimeout(t);
+                t = setTimeout(run, 80);
             });
         }
         function setupFaq() {
@@ -2507,8 +2557,8 @@ button:active,.btn:active,.nav-item:active,.tab:active,.action:active,.copy-btn:
 <style id="xray-snow-v7">
 #particles-canvas{display:none!important}
 body::before{display:none!important}
-#snow-canvas{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:0;opacity:.48}
-.card,.stat-card,.command-card,.setting-row,.faq-item,.community-card,.referral-card,.profile-card,.action-card,.btn,.nav-item,.chip,.toggle,.input,.select,.copy-btn{transition:transform .28s cubic-bezier(.22,1,.36,1),box-shadow .28s ease,border-color .28s ease,background-color .28s ease,opacity .28s ease,filter .28s ease}
+#snow-canvas{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:0;opacity:.32}
+.card,.stat-card,.command-card,.setting-row,.faq-item,.community-card,.referral-card,.profile-card,.action-card,.btn,.nav-item,.chip,.toggle,.input,.select,.copy-btn{transition:transform .32s cubic-bezier(.22,1,.36,1),box-shadow .32s ease,border-color .32s ease,opacity .32s ease;will-change:auto}
 .card:hover,.stat-card:hover,.command-card:hover,.setting-row:hover,.faq-item:hover,.community-card:hover,.referral-card:hover,.action-card:hover,.profile-card:hover{transform:translateY(-4px);box-shadow:0 16px 40px rgba(0,0,0,.16),0 0 0 1px rgba(145,165,255,.08)}
 .command-card:hover{transform:translateY(-5px) scale(1.008)}
 .btn:hover,.copy-btn:hover,.chip:hover{transform:translateY(-2px)}
@@ -2531,8 +2581,8 @@ body::before{display:none!important}
     dpr=Math.min(devicePixelRatio||1,2); w=innerWidth; h=innerHeight;
     canvas.width=w*dpr; canvas.height=h*dpr; canvas.style.width=w+'px'; canvas.style.height=h+'px';
     ctx.setTransform(dpr,0,0,dpr,0,0);
-    const count=Math.min(72,Math.max(30,Math.floor(w*h/18000)));
-    flakes=Array.from({length:count},()=>({x:rand(0,w),y:rand(-h,h),r:rand(2.2,5.8),v:rand(.18,.48),drift:rand(.08,.25),phase:rand(0,Math.PI*2),rot:rand(0,Math.PI),spin:rand(-.0025,.0025),o:rand(.22,.62),detail:Math.random()<.7}));
+    const count=Math.min(28,Math.max(14,Math.floor(w*h/42000)));
+    flakes=Array.from({length:count},()=>({x:rand(0,w),y:rand(-h,h),r:rand(2.2,5.8),v:rand(.18,.48),drift:rand(.08,.25),phase:rand(0,Math.PI*2),rot:rand(0,Math.PI),spin:rand(-.0025,.0025),o:rand(.22,.62),detail:Math.random()<.25}));
   }
   addEventListener('resize',resize,{passive:true}); resize();
   function crystal(p,now){
