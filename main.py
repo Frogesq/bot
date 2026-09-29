@@ -51,12 +51,14 @@ except ValueError:
     raise ValueError("ADMIN_ID должен быть числом")
 
 GIGACHAT_CREDENTIALS = os.getenv("GIGACHAT_CREDENTIALS", "")
-if not GIGACHAT_CREDENTIALS:
-    raise ValueError("GIGACHAT_CREDENTIALS не задан в .env")
+GIGACHAT_ACCESS_TOKEN = os.getenv("GIGACHAT_ACCESS_TOKEN", "")
+if not GIGACHAT_CREDENTIALS and not GIGACHAT_ACCESS_TOKEN:
+    raise ValueError("Задайте GIGACHAT_CREDENTIALS или GIGACHAT_ACCESS_TOKEN в .env")
 GIGACHAT_SCOPE = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
 GIGACHAT_MODEL = os.getenv("GIGACHAT_MODEL", "GigaChat")
-GIGACHAT_AUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-GIGACHAT_API_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
+GIGACHAT_AUTH_URL = os.getenv("GIGACHAT_AUTH_URL", "https://ngw.devices.sberbank.ru:9443/api/v2/oauth")
+GIGACHAT_API_URL = os.getenv("GIGACHAT_API_URL", "https://gigachat.devices.sberbank.ru/api/v1/chat/completions")
+GIGACHAT_CA_BUNDLE = os.getenv("GIGACHAT_CA_BUNDLE", "")  # путь к russian_trusted_root_ca.cer или пусто
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOADS_DIR = os.path.join(BASE_DIR, "downloads")
@@ -213,25 +215,46 @@ _giga_token = None
 _giga_token_exp = 0.0
 
 
+def _giga_verify():
+    if GIGACHAT_CA_BUNDLE and os.path.exists(GIGACHAT_CA_BUNDLE):
+        return GIGACHAT_CA_BUNDLE
+    return False
+
+
 def _giga_get_token() -> str:
     global _giga_token, _giga_token_exp
     now = time.time()
+    if GIGACHAT_ACCESS_TOKEN and not GIGACHAT_CREDENTIALS:
+        return GIGACHAT_ACCESS_TOKEN
     if _giga_token and now < _giga_token_exp - 60:
         return _giga_token
+    if not GIGACHAT_CREDENTIALS:
+        if GIGACHAT_ACCESS_TOKEN:
+            return GIGACHAT_ACCESS_TOKEN
+        raise RuntimeError("Нет GIGACHAT_CREDENTIALS / GIGACHAT_ACCESS_TOKEN")
     headers = {
-        "Authorization": f"Basic {GIGACHAT_CREDENTIALS}",
+        "Authorization": f"Basic {GIGACHAT_CREDENTIALS.strip()}",
         "RqUID": str(uuid.uuid4()),
         "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        "User-Agent": "XrayGram/1.0",
     }
-    resp = requests.post(
-        GIGACHAT_AUTH_URL,
-        headers=headers,
-        data={"scope": GIGACHAT_SCOPE},
-        timeout=30,
-        verify=False,
-    )
+    try:
+        resp = requests.post(
+            GIGACHAT_AUTH_URL,
+            headers=headers,
+            data={"scope": GIGACHAT_SCOPE},
+            timeout=30,
+            verify=_giga_verify(),
+        )
+    except requests.exceptions.SSLError as e:
+        raise RuntimeError(
+            f"GigaChat SSL: {e}. Укажите GIGACHAT_CA_BUNDLE (russian_trusted_root_ca) "
+            f"или GIGACHAT_ACCESS_TOKEN"
+        ) from e
     if resp.status_code != 200:
-        raise RuntimeError(f"GigaChat auth {resp.status_code}: {resp.text[:200]}")
+        snippet = resp.text[:180].replace("\n", " ")
+        raise RuntimeError(f"GigaChat auth {resp.status_code}: {snippet}")
     data = resp.json()
     _giga_token = data["access_token"]
     exp = data.get("expires_at")
@@ -251,6 +274,8 @@ def _giga_chat(messages: list, temperature: float = 0.7, max_tokens: int = 800) 
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "XrayGram/1.0",
         }
         payload = {
             "model": GIGACHAT_MODEL,
@@ -258,12 +283,13 @@ def _giga_chat(messages: list, temperature: float = 0.7, max_tokens: int = 800) 
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        verify = _giga_verify()
         resp = requests.post(
             GIGACHAT_API_URL,
             headers=headers,
             json=payload,
             timeout=90,
-            verify=False,
+            verify=verify,
         )
         if resp.status_code == 401:
             global _giga_token, _giga_token_exp
@@ -276,10 +302,11 @@ def _giga_chat(messages: list, temperature: float = 0.7, max_tokens: int = 800) 
                 headers=headers,
                 json=payload,
                 timeout=90,
-                verify=False,
+                verify=verify,
             )
         if resp.status_code != 200:
-            raise RuntimeError(f"GigaChat {resp.status_code}: {resp.text[:200]}")
+            snippet = resp.text[:180].replace("\n", " ")
+            raise RuntimeError(f"GigaChat {resp.status_code}: {snippet}")
         data = resp.json()
         if not data.get("choices"):
             raise RuntimeError(f"GigaChat empty: {data}")
@@ -320,6 +347,16 @@ class GigaChatAPI:
 
 
 ranvik_api = GigaChatAPI()
+
+
+async def _safe_delete_message(msg):
+    if not msg:
+        return
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
 
 PREMIUM_EMOJI = {
     "✅": "5260726538302660868", "❌": "5260342697075416641", "⚠️": "5258474669769497337",
@@ -2173,14 +2210,14 @@ async def cmd_gn(message: types.Message):
     loading = await message.answer(premium("<b>🤔 Думаю...</b>"), parse_mode="HTML")
     try:
         answer = ranvik_api.get_text_response([{"role": "user", "content": question}])
-        await loading.delete()
+        await _safe_delete_message(loading)
         if bc_id:
             await bot.send_message(chat_id, premium(f"<b>❓ Ваш вопрос:</b>\n{question}\n\n{answer}"),
                                    parse_mode="HTML", business_connection_id=bc_id)
         else:
             await bot.send_message(chat_id, premium(f"<b>❓ Ваш вопрос:</b>\n{question}\n\n{answer}"), parse_mode="HTML")
     except Exception as e:
-        await loading.delete()
+        await _safe_delete_message(loading)
         await bot.send_message(chat_id, premium(f"<b>❌ Ошибка при обращении к Нейросети:\n{str(e)}</b>"), parse_mode="HTML")
 
 async def start_duel(message: types.Message):
@@ -3750,11 +3787,11 @@ async def handle_business_message(message: types.Message):
             loading = await bot.send_message(user_id, premium("<b>🤔 Думаю...</b>"), parse_mode="HTML")
             try:
                 answer = ranvik_api.get_text_response([{"role": "user", "content": question}])
-                await loading.delete()
+                await _safe_delete_message(loading)
                 await bot.send_message(chat_id, premium(f"<b>❓ Ваш вопрос:</b>\n{question}\n\n{answer}"),
                                        parse_mode="HTML", business_connection_id=bc_id)
             except Exception as e:
-                await loading.delete()
+                await _safe_delete_message(loading)
                 await bot.send_message(user_id, premium(f"<b>❌ Ошибка при обращении к Нейросети:\n{str(e)}</b>"), parse_mode="HTML")
             return
 
