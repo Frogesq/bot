@@ -193,7 +193,7 @@ class GigaChatAPI:
                 raise RuntimeError("GIGACHAT_AUTH_KEY не задан в .env")
             response = requests.post(
                 GIGACHAT_OAUTH_URL,
-                headers={"Authorization": f"Basic {self.auth_key}", "RqUID": hashlib.uuid4().hex if hasattr(hashlib, "uuid4") else __import__("uuid").uuid4().hex,
+                headers={"Authorization": f"Basic {self.auth_key}", "RqUID": str(__import__("uuid").uuid4()),
                          "Content-Type": "application/x-www-form-urlencoded"},
                 data={"scope": GIGACHAT_SCOPE}, timeout=30, verify=False)
             response.raise_for_status()
