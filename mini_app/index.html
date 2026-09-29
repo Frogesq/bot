@@ -154,7 +154,7 @@
 
         .tab-content {
             display: none;
-            padding: 26px 18px 48px;
+            padding: 26px 18px calc(120px + env(safe-area-inset-bottom));
             max-width: 480px;
             margin: 0 auto;
         }
@@ -911,7 +911,7 @@
             transition: transform .28s var(--ease), opacity .22s var(--ease);
         }
 
-        .tab-content { padding: 28px 18px 52px; }
+        .tab-content { padding: 28px 18px calc(120px + env(safe-area-inset-bottom)); }
         .page-title { font-size: 25px; letter-spacing: -.035em; }
         .page-subtitle { margin-bottom: 22px; }
 
@@ -1012,7 +1012,7 @@ body{
     var(--bg);
   font-size:15px;
   letter-spacing:-.012em;
-  padding-bottom:100px;
+  padding-bottom:calc(130px + env(safe-area-inset-bottom));
 }
 body:before{
   content:"";position:fixed;inset:0;pointer-events:none;z-index:-2;
@@ -1040,7 +1040,7 @@ body:before{
 .tab-btn.active svg{color:#8794ff;transform:translateY(-1px) scale(1.03);filter:drop-shadow(0 5px 10px rgba(109,124,255,.28))}
 .tab-btn:active{transform:scale(.91)}
 
-.tab-content{max-width:620px;padding:34px 18px 38px;margin:0 auto;animation:none}
+.tab-content{max-width:620px;padding:34px 18px calc(120px + env(safe-area-inset-bottom));margin:0 auto;animation:none}
 .tab-content.active{animation:pageIn .5s var(--ease) both}
 @keyframes pageIn{from{opacity:0;transform:translateY(10px) scale(.992)}to{opacity:1;transform:none}}
 .page-title{font-size:30px;line-height:1.08;font-weight:760;letter-spacing:-.045em;margin-bottom:7px}
