@@ -15,6 +15,7 @@ import ast
 import operator
 import subprocess
 import tempfile
+import uuid
 from datetime import datetime
 from io import BytesIO
 from urllib.parse import parse_qsl
@@ -72,8 +73,6 @@ DEFAULT_AI_PROMPT = (
     "Ты вежливый и полезный ассистент. Отвечай кратко и по делу на русском языке. "
     "Не используй markdown, не пиши лишние пояснения."
 )
-
-# ===========================================================
 
 SYSTEM_PROMPT = """Ты только что был создан: "Кодером @CryptoViktor".
 
@@ -183,7 +182,8 @@ class GigaChatAPI:
         self.auth_key = GIGACHAT_AUTH_KEY
         self.access_token = None
         self.token_expires_at = 0
-        self.token_lock = __import__("threading").Lock()
+        import threading
+        self.token_lock = threading.Lock()
 
     def _get_token(self):
         with self.token_lock:
@@ -191,11 +191,15 @@ class GigaChatAPI:
                 return self.access_token
             if not self.auth_key:
                 raise RuntimeError("GIGACHAT_AUTH_KEY не задан в .env")
+
+            # RqUID должен быть UUID4 с дефисами (36 символов)
+            rquid = str(uuid.uuid4())
+
             response = requests.post(
                 GIGACHAT_OAUTH_URL,
                 headers={
                     "Authorization": f"Basic {self.auth_key}",
-                    "RqUID": str(__import__("uuid").uuid4()),
+                    "RqUID": rquid,
                     "Content-Type": "application/x-www-form-urlencoded",
                 },
                 data={"scope": GIGACHAT_SCOPE},
@@ -205,20 +209,32 @@ class GigaChatAPI:
             response.raise_for_status()
             data = response.json()
             self.access_token = data["access_token"]
-            self.token_expires_at = time.time() + int(data.get("expires_at", 0) / 1000 - time.time()) if data.get("expires_at") else time.time() + 1700
+            if data.get("expires_at"):
+                self.token_expires_at = data["expires_at"] / 1000
+            else:
+                self.token_expires_at = time.time() + 1700
             return self.access_token
 
     def get_text_response(self, messages: list) -> str:
         token = self._get_token()
         user_question = messages[-1]["content"] if messages else ""
         system_prompt = next((m["content"] for m in messages if m.get("role") == "system"), SYSTEM_PROMPT)
-        payload = {"model": GIGACHAT_MODEL, "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Отвечай на русском языке.\n\n{user_question}"}],
-            "temperature": 0.7, "max_tokens": 3000}
-        response = requests.post(GIGACHAT_CHAT_URL,
+        payload = {
+            "model": GIGACHAT_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Отвечай на русском языке.\n\n{user_question}"}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 3000,
+        }
+        response = requests.post(
+            GIGACHAT_CHAT_URL,
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json=payload, timeout=90, verify=False)
+            json=payload,
+            timeout=90,
+            verify=False,
+        )
         response.raise_for_status()
         data = response.json()
         answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -237,7 +253,6 @@ class GigaChatAPI:
 
 
 gigachat_api = GigaChatAPI()
-# GigaChat Free допускает только один одновременный запрос. Все генерации .gn и AI-ассистента проходят через одну очередь.
 _gigachat_semaphore = asyncio.Semaphore(1)
 
 
@@ -465,7 +480,7 @@ def apply_text_mode(text: str, mode: str) -> str:
     return text
 
 
-async def translate_text(text: str, target_lang: str) -> tuple[str, str]:
+async def translate_text(text: str, target_lang: str) -> tuple:
     stripped = (text or "").strip()
 
     if len(stripped) < 3:
@@ -522,7 +537,6 @@ async def translate_text(text: str, target_lang: str) -> tuple[str, str]:
 
 
 def _load_troll_messages() -> list:
-    """Загружает фразы для троллинга из troll.txt (одна фраза на строку)."""
     path = os.path.join(BASE_DIR, "troll.txt")
     if not os.path.exists(path):
         print("❌ troll.txt НЕ найден — троллинг будет пустым")
@@ -538,9 +552,7 @@ def _load_troll_messages() -> list:
 
 
 TROLL_MESSAGES = _load_troll_messages()
-
 troll_tasks = {}
-
 _away_throttle = {}
 AWAY_THROTTLE_SECONDS = 3600
 
@@ -552,12 +564,8 @@ KNOWN_COMMANDS = (
 )
 
 BOT_START_TIME = time.time()
-
-# echo: (owner_id, chat_id) -> True
 echo_enabled = {}
-# mute TTL: (owner_id, chat_id) -> expire_ts (None = forever)
 mute_until = {}
-# games
 chk_games = {}
 word_games = {}
 ms_games = {}
@@ -615,7 +623,7 @@ def safe_calc(expr: str) -> str:
     return str(result)
 
 
-def parse_duration(s: str) -> int | None:
+def parse_duration(s: str):
     m = re.fullmatch(r"(\d+)([smhdSMHD])", (s or "").strip())
     if not m:
         return None
@@ -651,7 +659,7 @@ def is_muted_now(owner_id: int, chat_id: int) -> bool:
         return False
 
 
-def set_mute(owner_id: int, chat_id: int, seconds: int | None):
+def set_mute(owner_id: int, chat_id: int, seconds):
     db.add_muted_chat(owner_id, chat_id)
     if seconds and seconds > 0:
         mute_until[(owner_id, chat_id)] = time.time() + seconds
@@ -741,9 +749,7 @@ def ttt_keyboard(board, game_id):
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
-# ---- Шашки (упрощённые) ----
 def chk_new_board():
-    # 8x8, 1=white, 2=black, 3=white king, 4=black king, 0=empty
     b = [[0] * 8 for _ in range(8)]
     for r in range(3):
         for c in range(8):
@@ -827,7 +833,6 @@ def chk_has_pieces(board, turn):
     return any(board[r][c] in need for r in range(8) for c in range(8))
 
 
-# ---- Сапёр ----
 def ms_create(size: int, bombs: int):
     field = [[0] * size for _ in range(size)]
     cells = [(r, c) for r in range(size) for c in range(size)]
@@ -918,7 +923,7 @@ def ms_status_text(game):
     return f"<b>💣 Сапёр</b> {game['size']}×{game['size']} · бомб: {game['bombs']}"
 
 
-async def convert_media_to_gif(src_path: str) -> str | None:
+async def convert_media_to_gif(src_path: str):
     out = src_path + ".gif"
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -949,7 +954,7 @@ async def animate_text(chat_id: int, text: str, message: types.Message, delay: f
     await asyncio.sleep(0.5)
 
 
-async def animate_snos(chat_id: int, message: types.Message, bc_id: str | None = None):
+async def animate_snos(chat_id: int, message: types.Message, bc_id=None):
     accounts = random.randint(100, 999)
     emails = random.randint(100, 999)
 
@@ -996,7 +1001,7 @@ async def animate_snos(chat_id: int, message: types.Message, bc_id: str | None =
         pass
 
 
-async def animate_dox(chat_id: int, message: types.Message, bc_id: str | None = None):
+async def animate_dox(chat_id: int, message: types.Message, bc_id=None):
     msg = await bot.send_message(
         chat_id,
         premium("<b>📡 Сканирование...</b>\n<b>Прогресс: 0%</b>"),
@@ -1037,7 +1042,6 @@ async def animate_dox(chat_id: int, message: types.Message, bc_id: str | None = 
 
 
 def _clean_ai_answer(text: str) -> str:
-    """Убирает служебные метки модерации, которые добавляют некоторые free-модели."""
     if not text:
         return text
     cleaned = text.strip()
@@ -1079,7 +1083,6 @@ def get_ai_response_sync(user_id: int, user_message: str) -> str:
             {"role": "system", "content": prompt},
             {"role": "user", "content": user_message}
         ])
-        # Убираем служебное оформление .gn, оставляя текст ответа для автоассистента.
         answer = answer.replace("🤖 <b>Ответ:</b>\n\n", "").replace("\n─\nБот - @XrayGramRobot", "").strip()
         return _clean_ai_answer(answer)
     except Exception as e:
@@ -1236,7 +1239,6 @@ def settings_keyboard(user_id: int):
     ])
 
 
-# ---- Подменю: Проверка на СКАМ/СПАМ ----
 def scam_check_menu_keyboard(user_id: int):
     on = db.get_scam_check(user_id)
     status = "Включена" if on else "Выключена"
@@ -1258,7 +1260,6 @@ def get_scam_check_menu_text(user_id):
     )
 
 
-# ---- Подменю: Онлайн мод ----
 def online_mode_menu_keyboard(user_id: int):
     on = db.get_online_mode(user_id)
     status = "Включён" if on else "Выключён"
@@ -1278,7 +1279,6 @@ def get_online_mode_menu_text(user_id):
     )
 
 
-# ---- Подменю: Приветствие ----
 def greeting_menu_keyboard(user_id: int):
     on = db.get_greeting_enabled(user_id)
     status = "Включено" if on else "Выключено"
@@ -1305,7 +1305,6 @@ def get_greeting_menu_text(user_id):
     )
 
 
-# ---- Подменю: Нет на месте ----
 def away_menu_keyboard(user_id: int):
     on = db.get_away_enabled(user_id)
     status = "Включён" if on else "Выключен"
@@ -1332,7 +1331,6 @@ def get_away_menu_text(user_id):
     )
 
 
-# ---- Подменю: AI Ассистент ----
 def ai_menu_keyboard(user_id: int):
     on = db.get_ai_enabled(user_id)
     status = "Включён" if on else "Выключен"
@@ -1427,7 +1425,6 @@ async def is_subscribed(user_id: int) -> bool:
 
 _sub_cache = {}
 _sub_notified = {}
-
 SUB_CACHE_TTL = 60
 SUB_NOTIFY_COOLDOWN = 300
 
@@ -1445,16 +1442,13 @@ async def _check_subscription_cached(user_id: int, ttl: int = SUB_CACHE_TTL) -> 
 async def ensure_subscription(user_id: int, notify: bool = True, force_notify: bool = False) -> bool:
     if await _check_subscription_cached(user_id):
         return True
-
     if not notify:
         return False
-
     now = time.time()
     last = _sub_notified.get(user_id, 0)
     if not force_notify and now - last < SUB_NOTIFY_COOLDOWN:
         return False
     _sub_notified[user_id] = now
-
     try:
         await bot.send_message(
             user_id,
@@ -1500,8 +1494,8 @@ async def _wait_for_subscription_and_send_instruction(user_id: int):
     finally:
         _pending_sub_tasks.pop(user_id, None)
 
-# ============ ВЕБ-СЕРВЕР ДЛЯ MINI APP ============
-def _validate_init_data(init_data: str) -> dict | None:
+
+def _validate_init_data(init_data: str):
     try:
         parsed = dict(parse_qsl(init_data, keep_blank_values=True))
         received_hash = parsed.pop("hash", None)
@@ -1539,29 +1533,23 @@ async def serve_static(request):
 
 async def api_stats(request):
     init_data = request.headers.get("X-Init-Data", "") or request.headers.get("x-init-data", "")
-
     if not init_data:
         return web.json_response({"error": "no_init_data"}, status=401)
-
     user = _validate_init_data(init_data)
     if not user:
         return web.json_response({"error": "invalid_init_data"}, status=401)
-
     user_id = int(user.get("id", 0))
     if not user_id:
         return web.json_response({"error": "no_user"}, status=400)
-
     try:
         row = db.get_user(user_id)
         registered_at = row["registered_at"] if row and row["registered_at"] else None
-
         stars = db.get_user_stars(user_id)
         stats = db.get_user_stats(user_id)
         msgs_saved = db.get_user_messages_saved(user_id)
         active_conns = db.get_user_active_connections(user_id)
         invited_total = db.count_referrals_invited(user_id)
         invited_credited = db.count_referrals(user_id)
-
         return web.json_response({
             "user": {
                 "id": user_id,
@@ -1591,18 +1579,14 @@ async def api_stats(request):
 
 async def api_settings(request):
     init_data = request.headers.get("X-Init-Data", "") or request.headers.get("x-init-data", "")
-
     if not init_data:
         return web.json_response({"error": "no_init_data"}, status=401)
-
     user = _validate_init_data(init_data)
     if not user:
         return web.json_response({"error": "invalid_init_data"}, status=401)
-
     user_id = int(user.get("id", 0))
     if not user_id:
         return web.json_response({"error": "no_user"}, status=400)
-
     try:
         mode = db.get_text_mode(user_id)
         translate = db.get_translate_to(user_id)
@@ -1628,30 +1612,23 @@ async def api_settings(request):
 
 async def api_settings_update(request):
     init_data = request.headers.get("X-Init-Data", "") or request.headers.get("x-init-data", "")
-
     if not init_data:
         return web.json_response({"error": "no_init_data"}, status=401)
-
     user = _validate_init_data(init_data)
     if not user:
         return web.json_response({"error": "invalid_init_data"}, status=401)
-
     user_id = int(user.get("id", 0))
     if not user_id:
         return web.json_response({"error": "no_user"}, status=400)
-
     try:
         data = await request.json()
     except Exception:
         return web.json_response({"error": "invalid_json"}, status=400)
-
     field = data.get("field")
     enabled = bool(data.get("enabled", False))
     text = (data.get("text") or "").strip()
-
     if len(text) > 2000:
         return web.json_response({"error": "text_too_long"}, status=400)
-
     try:
         if field == "greeting":
             if enabled and not text:
@@ -1681,7 +1658,6 @@ async def api_settings_update(request):
     except Exception as e:
         logger.error(f"[MINI_APP] Ошибка сохранения: {e}")
         return web.json_response({"error": str(e)}, status=500)
-
     return web.json_response({"ok": True})
 
 
@@ -1693,7 +1669,6 @@ async def mini_app_server():
         app.router.add_get("/api/settings", api_settings)
         app.router.add_post("/api/settings/update", api_settings_update)
         app.router.add_get("/{name}", serve_static)
-
         port = int(os.getenv("PORT", "3000"))
         runner = web.AppRunner(app)
         await runner.setup()
@@ -1702,12 +1677,13 @@ async def mini_app_server():
         logger.info(f"✅ Mini App сервер запущен на 0.0.0.0:{port}")
     except Exception as e:
         logger.error(f"❌ Ошибка запуска Mini App сервера: {e}")
-# ==================================================
+
 
 def get_user_download_dir(user_id: int) -> str:
     d = os.path.join(DOWNLOADS_DIR, f"user_{user_id}")
     os.makedirs(d, exist_ok=True)
     return d
+
 
 def extract_media(message: types.Message):
     if message.photo:
@@ -1728,7 +1704,8 @@ def extract_media(message: types.Message):
         return "sticker", message.sticker.file_id
     return None, None
 
-async def load_media_to_buffer(file_id: str) -> bytes | None:
+
+async def load_media_to_buffer(file_id: str):
     if not file_id:
         return None
     try:
@@ -1744,6 +1721,7 @@ async def load_media_to_buffer(file_id: str) -> bytes | None:
     except Exception as e:
         logger.error(f"Ошибка скачивания медиа: {e}")
         return None
+
 
 async def download_files(message: types.Message, user_id: int) -> list:
     file_paths = []
@@ -1783,6 +1761,7 @@ async def download_files(message: types.Message, user_id: int) -> list:
         except Exception as e:
             logger.error(f"Ошибка скачивания {file_id}: {e}")
     return file_paths
+
 
 def format_user_info(user: types.User) -> str:
     name = (user.first_name or "") + (" " + user.last_name if user.last_name else "")
@@ -1832,6 +1811,7 @@ def _build_notif(header: str, fullname: str, content_lines: list) -> str:
     lines.append(NOTIF_FOOTER)
     return "\n".join(lines)
 
+
 async def send_notification(chat_id: int, text: str, files: list = None, parse_mode: str = "HTML"):
     try:
         if files:
@@ -1848,7 +1828,8 @@ async def send_notification(chat_id: int, text: str, files: list = None, parse_m
     except Exception as e:
         logger.error(f"Ошибка отправки уведомления: {e}")
 
-async def check_scam(user_id: int) -> tuple[bool, str]:
+
+async def check_scam(user_id: int) -> tuple:
     try:
         chat = await bot.get_chat(user_id)
         if getattr(chat, 'is_scam', False):
@@ -1857,7 +1838,6 @@ async def check_scam(user_id: int) -> tuple[bool, str]:
             return True, "Telegram пометил как FAKE"
     except Exception as e:
         logger.debug(f"[SCAM] get_chat {user_id}: {e}")
-
     try:
         resp = requests.get(
             f"https://api.intellivoid.net/spamprotection/v1/lookup?query={user_id}",
@@ -1874,10 +1854,10 @@ async def check_scam(user_id: int) -> tuple[bool, str]:
                     return True, f"SpamProtection: {reason}"
     except Exception as e:
         logger.debug(f"[SCAM] SpamProtection {user_id}: {e}")
-
     return False, ""
 
-def split_into_chunks(text: str) -> list[str]:
+
+def split_into_chunks(text: str) -> list:
     words = text.split()
     if not words:
         return []
@@ -1889,6 +1869,7 @@ def split_into_chunks(text: str) -> list[str]:
         chunks.append(" ".join(chunk))
         i += chunk_size
     return chunks
+
 
 async def troll_spam_task(chat_id: int, bc_id: str, user_id: int):
     while True:
@@ -1905,11 +1886,13 @@ async def troll_spam_task(chat_id: int, bc_id: str, user_id: int):
             if asyncio.current_task().cancelled():
                 return
 
+
 def _positive_ttl(value) -> bool:
     try:
         return value is not None and int(value) > 0
     except (TypeError, ValueError):
         return False
+
 
 def _object_value(obj, key: str):
     if obj is None:
@@ -1919,6 +1902,7 @@ def _object_value(obj, key: str):
         return value
     extra = getattr(obj, "model_extra", None) or {}
     return extra.get(key)
+
 
 def _nested_value(obj, *keys, _seen=None):
     if obj is None:
@@ -1930,7 +1914,6 @@ def _nested_value(obj, *keys, _seen=None):
         if marker in _seen:
             return None
         _seen.add(marker)
-
     if isinstance(obj, dict):
         for key in keys:
             if obj.get(key) is not None:
@@ -1958,12 +1941,12 @@ def _nested_value(obj, *keys, _seen=None):
         raw_dict = getattr(obj, "__dict__", None)
         if isinstance(raw_dict, dict):
             values.extend(raw_dict.values())
-
     for value in values:
         found = _nested_value(value, *keys, _seen=_seen)
         if found is not None:
             return found
     return None
+
 
 def _has_restricted_marker(message: types.Message) -> bool:
     return (
@@ -1973,6 +1956,7 @@ def _has_restricted_marker(message: types.Message) -> bool:
             "has_view_once", "is_view_once", "view_once", "is_secret"
         ))
     )
+
 
 def is_restricted_media(message: types.Message) -> bool:
     media_fields = (
@@ -1984,7 +1968,8 @@ def is_restricted_media(message: types.Message) -> bool:
         return True
     return _has_restricted_marker(message)
 
-async def safe_edit_or_send(message: types.Message, new_text: str, reply_markup: InlineKeyboardMarkup = None):
+
+async def safe_edit_or_send(message: types.Message, new_text: str, reply_markup=None):
     new_text = premium(new_text)
     try:
         if message.text or message.caption:
@@ -2010,11 +1995,11 @@ async def safe_edit_or_send(message: types.Message, new_text: str, reply_markup:
             except Exception as e2:
                 logger.error(f"Ошибка отправки: {e2}")
 
+
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
     user = message.from_user
     db.register_user(user.id, user.username or "", user.first_name or "", user.last_name or "")
-
     try:
         parts = (message.text or "").split()
         if len(parts) > 1 and parts[1].startswith("ref_"):
@@ -2024,7 +2009,6 @@ async def start_command(message: types.Message):
                     logger.info(f"[REF] {user.id} пришёл по ссылке от {referrer_id}")
     except (ValueError, IndexError):
         pass
-
     is_admin = (user.id == ADMIN_ID)
     first_name = user.first_name or "друг"
     main_text = premium(
@@ -2045,9 +2029,11 @@ async def start_command(message: types.Message):
     else:
         await message.answer(main_text, reply_markup=main_menu_keyboard(is_admin), parse_mode="HTML")
 
+
 @dp.message(Command("duel"))
 async def cmd_duel(message: types.Message):
     await start_duel(message)
+
 
 @dp.message(Command("anim"))
 async def cmd_anim(message: types.Message):
@@ -2057,13 +2043,14 @@ async def cmd_anim(message: types.Message):
         return
     await animate_text(message.chat.id, text, message)
 
+
 @dp.message(Command("ttt"))
 async def cmd_ttt(message: types.Message):
     await start_ttt(message)
 
+
 @dp.message(Command("gn"))
 async def cmd_gn(message: types.Message):
-    user_id = message.from_user.id
     chat_id = message.chat.id
     bc_id = message.business_connection_id
     question = message.text.replace("/gn", "").strip()
@@ -2084,6 +2071,7 @@ async def cmd_gn(message: types.Message):
         await loading.delete()
         await bot.send_message(chat_id, premium(f"<b>❌ Ошибка при обращении к Нейросети:\n{str(e)}</b>"), parse_mode="HTML")
 
+
 async def start_duel(message: types.Message):
     chat_id = message.chat.id
     user_id = message.from_user.id
@@ -2103,6 +2091,7 @@ async def start_duel(message: types.Message):
         result = "🏆 ПОБЕДИТЕЛЬ: ВАШ СОБЕСЕДНИК!\n\n💀 Вы были быстрее, но удача была на его стороне..."
     await msg.edit_text(premium(f"<b>{result}</b>"), parse_mode="HTML")
 
+
 async def start_ttt(message: types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -2120,6 +2109,7 @@ async def start_ttt(message: types.Message):
         premium(f"<b>❌⭕ Крестики-Нолики</b>\n\nХод: <b>❌ ({player_x_name})</b>\n{EMPTY}{EMPTY}{EMPTY}\n{EMPTY}{EMPTY}{EMPTY}\n{EMPTY}{EMPTY}{EMPTY}"),
         parse_mode="HTML", reply_markup=ttt_keyboard(board, game_id)
     )
+
 
 @dp.callback_query(lambda c: c.data.startswith("ttt_"))
 async def ttt_callback(callback: types.CallbackQuery):
@@ -2387,6 +2377,7 @@ async def check_subscription(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Вы ещё не подписаны. Подпишитесь и попробуйте снова.", show_alert=True)
 
+
 async def show_instruction_logic(user_id: int):
     instruction_text = premium(
         "<b>📖 Инструкция по подключению XrayGram</b>\n\n"
@@ -2418,6 +2409,7 @@ async def show_instruction_logic(user_id: int):
     except Exception as e:
         logger.error(f"Ошибка отправки инструкции пользователю {user_id}: {e}")
 
+
 @dp.callback_query(lambda c: c.data == "show_instruction")
 async def show_instruction(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -2430,18 +2422,13 @@ async def show_instruction(callback: types.CallbackQuery):
             "<i>После подписки инструкция придёт сюда автоматически в течение 5 секунд.</i>"
         )
         try:
-            await callback.message.edit_text(
-                text,
-                reply_markup=subscription_keyboard(),
-                parse_mode="HTML"
-            )
+            await callback.message.edit_text(text, reply_markup=subscription_keyboard(), parse_mode="HTML")
         except Exception:
             try:
                 await callback.message.delete()
             except Exception:
                 pass
             await bot.send_message(user_id, text, parse_mode="HTML", reply_markup=subscription_keyboard())
-
         _spawn_sub_watcher(user_id)
         await callback.answer()
         return
@@ -2449,6 +2436,7 @@ async def show_instruction(callback: types.CallbackQuery):
     await callback.message.delete()
     await show_instruction_logic(user_id)
     await callback.answer()
+
 
 @dp.callback_query(lambda c: c.data.startswith("unmute_"))
 async def unmute_callback(callback: types.CallbackQuery):
@@ -2462,18 +2450,14 @@ async def unmute_callback(callback: types.CallbackQuery):
     except:
         await callback.answer("❌ Ошибка!", show_alert=True)
         return
-
     if callback.from_user.id != target_user_id:
         await callback.answer("⛔ Это не ваша кнопка.", show_alert=True)
         return
-
     clear_mute(target_user_id, target_chat_id)
-
     cursor = db.conn.cursor()
     cursor.execute("SELECT bc_id FROM connections WHERE user_id = ?", (target_user_id,))
     row = cursor.fetchone()
     bc_id = row["bc_id"] if row else None
-
     if bc_id:
         try:
             await bot.send_message(
@@ -2483,7 +2467,6 @@ async def unmute_callback(callback: types.CallbackQuery):
             )
         except Exception as e:
             logger.error(f"[UNMUTE] Не удалось отправить в чат {target_chat_id}: {e}")
-
     try:
         await callback.message.edit_text(
             premium(f"<b>🔊 Чат {target_chat_id} размучен.\nСообщения снова сохраняются.</b>"),
@@ -2495,9 +2478,9 @@ async def unmute_callback(callback: types.CallbackQuery):
             await callback.message.edit_reply_markup(reply_markup=None)
         except:
             pass
-
     logger.info(f"[CMD] Мут снят через кнопку для чата {target_chat_id}")
     await callback.answer("✅ Мут снят")
+
 
 @dp.callback_query(lambda c: c.data == "show_commands")
 async def show_commands(callback: types.CallbackQuery):
@@ -2524,21 +2507,17 @@ async def cmd_info(callback: types.CallbackQuery):
 async def show_profile(callback: types.CallbackQuery):
     user = callback.from_user
     user_id = user.id
-
     full_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "Без имени"
     username = f"@{user.username}" if user.username else "без username"
-
     row = db.get_user(user_id)
     if row and row["registered_at"]:
         registered_at = row["registered_at"]
     else:
         registered_at = "неизвестно"
-
     if user_id == ADMIN_ID:
         tariff = "👑 Админ"
     else:
         tariff = "👤 Free"
-
     text = premium(
         "<b>👤 Профиль</b>\n\n"
         f"Имя: {full_name}\n"
@@ -2550,16 +2529,14 @@ async def show_profile(callback: types.CallbackQuery):
     await safe_edit_or_send(callback.message, text, profile_keyboard())
     await callback.answer()
 
+
 @dp.callback_query(lambda c: c.data == "referral_menu")
 async def referral_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
-
     invited_total = db.count_referrals_invited(user_id)
     invited_credited = db.count_referrals(user_id)
     stars = db.get_user_stars(user_id)
-
     ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
-
     text = premium(
         "<b>⭐ Заработать звёзды</b>\n\n"
         "<b>Как это работает:</b>\n"
@@ -2576,7 +2553,6 @@ async def referral_menu(callback: types.CallbackQuery):
         f"• Ожидают выдачи: <b>{stars['pending']:.1f} ⭐</b>\n\n"
         "<b>⚠️ Минимальная сумма вывода: 15 ⭐</b>"
     )
-
     try:
         await callback.message.edit_text(text, reply_markup=referral_keyboard(), parse_mode="HTML")
     except Exception:
@@ -2585,8 +2561,8 @@ async def referral_menu(callback: types.CallbackQuery):
         except Exception:
             pass
         await bot.send_message(user_id, text, reply_markup=referral_keyboard(), parse_mode="HTML")
-
     await callback.answer()
+
 
 @dp.callback_query(lambda c: c.data == "settings")
 async def show_settings(callback: types.CallbackQuery):
@@ -2595,7 +2571,6 @@ async def show_settings(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# ===== Подменю: Проверка на СКАМ/СПАМ =====
 @dp.callback_query(lambda c: c.data == "scam_check_menu")
 async def scam_check_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -2613,7 +2588,6 @@ async def toggle_scam_check(callback: types.CallbackQuery):
     await safe_edit_or_send(callback.message, get_scam_check_menu_text(user_id), scam_check_menu_keyboard(user_id))
 
 
-# ===== Подменю: Онлайн мод =====
 @dp.callback_query(lambda c: c.data == "online_mode_menu")
 async def online_mode_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -2631,7 +2605,6 @@ async def toggle_online_mode(callback: types.CallbackQuery):
     await safe_edit_or_send(callback.message, get_online_mode_menu_text(user_id), online_mode_menu_keyboard(user_id))
 
 
-# ===== Подменю: Приветствие =====
 DEFAULT_GREETING = "Здравствуйте! Спасибо за сообщение. Отвечу при первой возможности."
 DEFAULT_AWAY = "Я сейчас не в сети. Отвечу при первой возможности."
 
@@ -2721,7 +2694,6 @@ async def process_greeting_text(message: types.Message, state: FSMContext):
     )
 
 
-# ===== Подменю: Нет на месте =====
 @dp.callback_query(lambda c: c.data == "away_menu")
 async def away_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -2807,7 +2779,6 @@ async def process_away_text(message: types.Message, state: FSMContext):
     )
 
 
-# ===== Подменю: AI Ассистент =====
 @dp.callback_query(lambda c: c.data == "ai_menu")
 async def ai_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -2923,7 +2894,6 @@ async def cancel_settings_input(callback: types.CallbackQuery, state: FSMContext
     await callback.answer("Отменено")
 
 
-# ===== Режим текста =====
 @dp.callback_query(lambda c: c.data == "text_mode_menu")
 async def text_mode_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -2942,6 +2912,7 @@ async def text_mode_menu(callback: types.CallbackQuery):
     )
     await safe_edit_or_send(callback.message, text, text_mode_keyboard(user_id))
     await callback.answer()
+
 
 @dp.callback_query(lambda c: c.data.startswith("set_text_mode_"))
 async def set_text_mode(callback: types.CallbackQuery):
@@ -2967,6 +2938,7 @@ async def set_text_mode(callback: types.CallbackQuery):
     )
     await safe_edit_or_send(callback.message, text, text_mode_keyboard(user_id))
 
+
 @dp.callback_query(lambda c: c.data == "translate_menu")
 async def translate_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -2976,6 +2948,7 @@ async def translate_menu(callback: types.CallbackQuery):
     )
     await safe_edit_or_send(callback.message, text, translate_keyboard(user_id))
     await callback.answer()
+
 
 @dp.callback_query(lambda c: c.data.startswith("set_translate_"))
 async def set_translate(callback: types.CallbackQuery):
@@ -2991,6 +2964,7 @@ async def set_translate(callback: types.CallbackQuery):
         "Выберите язык, на который бот будет переводить входящие сообщения от ваших собеседников."
     )
     await safe_edit_or_send(callback.message, text, translate_keyboard(user_id))
+
 
 @dp.callback_query(lambda c: c.data == "back_to_main")
 async def back_to_main(callback: types.CallbackQuery):
@@ -3031,6 +3005,7 @@ async def back_to_main(callback: types.CallbackQuery):
         )
     await callback.answer()
 
+
 @dp.callback_query(lambda c: c.data == "admin_panel")
 async def admin_panel(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -3040,6 +3015,7 @@ async def admin_panel(callback: types.CallbackQuery):
     await safe_edit_or_send(callback.message, text, admin_panel_keyboard())
     await callback.answer()
 
+
 @dp.callback_query(lambda c: c.data == "back_to_admin")
 async def back_to_admin(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -3048,6 +3024,7 @@ async def back_to_admin(callback: types.CallbackQuery):
     text = premium("<b>⚙️ Админ-панель XrayGram\n\nВыберите действие:</b>")
     await safe_edit_or_send(callback.message, text, admin_panel_keyboard())
     await callback.answer()
+
 
 @dp.callback_query(lambda c: c.data == "broadcast")
 async def broadcast_start(callback: types.CallbackQuery, state: FSMContext):
@@ -3060,6 +3037,7 @@ async def broadcast_start(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(BroadcastStates.waiting_for_content)
     await callback.answer()
 
+
 @dp.callback_query(lambda c: c.data == "cancel_broadcast")
 async def cancel_broadcast(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
@@ -3070,6 +3048,7 @@ async def cancel_broadcast(callback: types.CallbackQuery, state: FSMContext):
     text = premium("<b>⚙️ Админ-панель XrayGram\n\nВыберите действие:</b>")
     await bot.send_message(callback.from_user.id, text, parse_mode="HTML", reply_markup=admin_panel_keyboard())
     await callback.answer()
+
 
 @dp.message(StateFilter(BroadcastStates.waiting_for_content))
 async def process_broadcast(message: types.Message, state: FSMContext):
@@ -3083,14 +3062,11 @@ async def process_broadcast(message: types.Message, state: FSMContext):
         await message.answer(premium("<b>📭 Нет зарегистрированных пользователей.</b>"), parse_mode="HTML")
         await state.clear()
         return
-
     sent = 0
     failed = 0
     blocked = 0
     no_dialog = 0
-
     status_msg = await message.answer(premium("<b>⏳ Рассылка запущена...</b>"), parse_mode="HTML")
-
     for (user_id,) in users:
         try:
             await bot.copy_message(chat_id=user_id, from_chat_id=message.chat.id, message_id=message.message_id)
@@ -3116,12 +3092,10 @@ async def process_broadcast(message: types.Message, state: FSMContext):
                 logger.error(f"Ошибка рассылки {user_id}: {e}")
                 failed += 1
             await asyncio.sleep(0.05)
-
     try:
         await status_msg.delete()
     except:
         pass
-
     report = (
         f"<b>✅ Рассылка завершена!</b>\n\n"
         f"📤 Отправлено: {sent}\n"
@@ -3131,6 +3105,7 @@ async def process_broadcast(message: types.Message, state: FSMContext):
     )
     await message.answer(premium(report), parse_mode="HTML", reply_markup=back_to_admin_keyboard())
     await state.clear()
+
 
 @dp.callback_query(lambda c: c.data == "users_txt")
 async def users_txt(callback: types.CallbackQuery):
@@ -3155,23 +3130,20 @@ async def users_txt(callback: types.CallbackQuery):
                                            caption=premium("<b>📄 Список всех пользователей (txt)</b>"), parse_mode="HTML")
     await callback.answer()
 
+
 @dp.callback_query(lambda c: c.data == "active_connections")
 async def active_connections(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("⛔ Доступ запрещён.", show_alert=True)
         return
-
     cursor = db.conn.cursor()
     cursor.execute("SELECT bc_id, user_id FROM connections")
     all_conns = cursor.fetchall()
-
     if not all_conns:
         await callback.answer("Нет активных подключений.", show_alert=True)
         return
-
     active_ids = []
     removed = 0
-
     for row in all_conns:
         bc_id = row["bc_id"]
         user_id = row["user_id"]
@@ -3187,15 +3159,12 @@ async def active_connections(callback: types.CallbackQuery):
             db.delete_user_completely(user_id)
             removed += 1
             logger.info(f"[ACTIVE] bc_id {bc_id} невалиден — {user_id} удалён из БД")
-
     if not active_ids:
         await callback.answer(f"Нет активных подключений. Очищено: {removed}", show_alert=True)
         return
-
     placeholders = ",".join("?" for _ in active_ids)
     cursor.execute(f"SELECT user_id, username, first_name, last_name FROM users WHERE user_id IN ({placeholders})", active_ids)
     users = cursor.fetchall()
-
     content = "Активные подключения XrayGram\n"
     content += f"Всего активных: {len(users)}\n"
     content += f"Очищено мёртвых: {removed}\n"
@@ -3205,7 +3174,6 @@ async def active_connections(callback: types.CallbackQuery):
         name = f"{fname or ''} {lname or ''}".strip() or "Без имени"
         un = f"@{uname}" if uname else f"ID: {uid}"
         content += f"{name} ({un})\nID: {uid}\n" + "-" * 30 + "\n"
-
     await callback.message.answer_document(
         BufferedInputFile(content.encode("utf-8"), filename="active_connections.txt"),
         caption=premium(f"<b>🔗 Активные подключения (txt)\nВсего: {len(users)} | Очищено мёртвых: {removed}</b>"),
@@ -3213,26 +3181,23 @@ async def active_connections(callback: types.CallbackQuery):
     )
     await callback.answer()
 
+
 @dp.callback_query(lambda c: c.data == "ref_admin")
 async def ref_admin(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("⛔ Доступ запрещён.", show_alert=True)
         return
-
     refs = db.get_all_referrers()
     if not refs:
         await callback.answer("Пока нет рефералов.", show_alert=True)
         return
-
     total_pending = sum(r["pending_stars"] for r in refs)
     total_credited = sum(r["invited_credited"] for r in refs)
-
     content = "Реферальная статистика XrayGram\n"
     content += f"Всего рефереров: {len(refs)}\n"
     content += f"Всего подключений по ссылкам: {total_credited}\n"
     content += f"Суммарно ожидает выдачи: {total_pending:.1f} ⭐\n"
     content += "=" * 60 + "\n\n"
-
     for r in refs:
         name = f"{r['first_name'] or ''} {r['last_name'] or ''}".strip() or "Без имени"
         un = f"@{r['username']}" if r["username"] else f"ID: {r['user_id']}"
@@ -3244,13 +3209,13 @@ async def ref_admin(callback: types.CallbackQuery):
             f"Ожидает выдачи: {r['pending_stars']:.1f} ⭐\n"
             + "-" * 40 + "\n"
         )
-
     await callback.message.answer_document(
         BufferedInputFile(content.encode("utf-8"), filename="referrals.txt"),
         caption=premium(f"<b>⭐ Рефералы (txt)\nРефереров: {len(refs)} | Подключений: {total_credited} | К выдаче: {total_pending:.1f} ⭐</b>"),
         parse_mode="HTML"
     )
     await callback.answer()
+
 
 @dp.business_connection()
 async def handle_business_connection(connection: BusinessConnection):
@@ -3266,7 +3231,6 @@ async def handle_business_connection(connection: BusinessConnection):
     if not db.is_user_registered(user_id):
         user = connection.user
         db.register_user(user_id, user.username, user.first_name, user.last_name)
-
     try:
         referrer_id = db.get_referrer(user_id)
         if referrer_id and not db.is_referral_credited(user_id):
@@ -3287,7 +3251,6 @@ async def handle_business_connection(connection: BusinessConnection):
             logger.info(f"[REF] {referrer_id} получил +1.5⭐ за подключение {user_id}")
     except Exception as e:
         logger.error(f"[REF] Ошибка начисления: {e}")
-
     try:
         await bot.send_message(user_id,
             premium("<b>✅ Ваш бизнес-аккаунт успешно подключён к XrayGram!\n\n"
@@ -3296,7 +3259,6 @@ async def handle_business_connection(connection: BusinessConnection):
             parse_mode="HTML")
     except Exception as e:
         logger.error(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
-
     try:
         user = connection.user
         full_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "Без имени"
@@ -3311,13 +3273,13 @@ async def handle_business_connection(connection: BusinessConnection):
     except Exception as e:
         logger.error(f"Не удалось отправить уведомление админу: {e}")
 
+
 @dp.business_message()
 async def handle_business_message(message: types.Message):
     bc_id = message.business_connection_id
     if not bc_id:
         logger.warning("business_connection_id отсутствует")
         return
-
     user_id = db.get_user_by_bc_id(bc_id)
     if not user_id and message.from_user and message.from_user.id == ADMIN_ID:
         db.set_connection(bc_id, ADMIN_ID)
@@ -3325,34 +3287,27 @@ async def handle_business_message(message: types.Message):
             db.register_user(ADMIN_ID, message.from_user.username or "", message.from_user.first_name or "", message.from_user.last_name or "")
         user_id = ADMIN_ID
         logger.info(f"[FIX] Создана связь для владельца: bc_id={bc_id}, user_id={ADMIN_ID}")
-
     if not user_id and message.from_user:
         user_id = message.from_user.id
         logger.warning(f"bc_id={bc_id} не найден, fallback user_id={user_id}")
-
     if not user_id:
         logger.warning(f"Не удалось определить user_id для bc_id={bc_id}")
         return
-
     if not db.get_user_by_bc_id(bc_id):
         logger.info(f"[SKIP] bc_id={bc_id} не активен — сообщение не сохраняется")
         return
-
     if not db.is_user_registered(user_id):
         if message.from_user:
             db.register_user(user_id, message.from_user.username or "", message.from_user.first_name or "", message.from_user.last_name or "")
         else:
             db.register_user(user_id, "", "Unknown", "")
-
     if not await ensure_subscription(user_id, notify=True):
         logger.info(f"[SUB] {user_id} не подписан — сообщение не обрабатывается")
         return
-
     chat_id = message.chat.id
     sender_id = message.from_user.id if message.from_user else None
     is_owner = (sender_id == user_id)
 
-    # ============ ПРИВЕТСТВИЕ И «НЕТ НА МЕСТЕ» ============
     if not is_owner and sender_id and message.text and not message.text.startswith('.'):
         try:
             if db.get_greeting_enabled(user_id) and not db.was_chat_greeted(user_id, chat_id):
@@ -3361,17 +3316,11 @@ async def handle_business_message(message: types.Message):
                     if "{name}" in greet_text:
                         peer_name = message.from_user.first_name or "друг"
                         greet_text = greet_text.replace("{name}", html.escape(peer_name))
-                    await bot.send_message(
-                        chat_id,
-                        greet_text,
-                        business_connection_id=bc_id,
-                        parse_mode="HTML"
-                    )
+                    await bot.send_message(chat_id, greet_text, business_connection_id=bc_id, parse_mode="HTML")
                     db.mark_chat_greeted(user_id, chat_id)
                     logger.info(f"[GREETING] Отправлено в чат {chat_id}")
         except Exception as e:
             logger.error(f"[GREETING] Ошибка: {e}")
-
         try:
             if db.get_away_enabled(user_id):
                 now_ts = time.time()
@@ -3383,29 +3332,18 @@ async def handle_business_message(message: types.Message):
                         if "{name}" in away_text:
                             peer_name = message.from_user.first_name or "друг"
                             away_text = away_text.replace("{name}", html.escape(peer_name))
-                        await bot.send_message(
-                            chat_id,
-                            away_text,
-                            business_connection_id=bc_id,
-                            parse_mode="HTML"
-                        )
+                        await bot.send_message(chat_id, away_text, business_connection_id=bc_id, parse_mode="HTML")
                         _away_throttle[key] = now_ts
                         logger.info(f"[AWAY] Отправлено в чат {chat_id}")
         except Exception as e:
             logger.error(f"[AWAY] Ошибка: {e}")
 
-    # ============ AI АССИСТЕНТ ============
     if not is_owner and sender_id and message.text and not message.text.startswith('.'):
         if db.get_ai_enabled(user_id):
             try:
                 ai_answer = await get_ai_response(user_id, message.text)
                 if ai_answer:
-                    await bot.send_message(
-                        chat_id,
-                        ai_answer,
-                        business_connection_id=bc_id,
-                        parse_mode="HTML"
-                    )
+                    await bot.send_message(chat_id, ai_answer, business_connection_id=bc_id, parse_mode="HTML")
                     logger.info(f"[AI] Ответ отправлен в чат {chat_id}")
                 else:
                     logger.warning(f"[AI] Пустой ответ для {user_id}")
@@ -3435,22 +3373,18 @@ async def handle_business_message(message: types.Message):
             translate_to = db.get_translate_to(user_id)
             if translate_to and translate_to != "off":
                 original = message.text.strip()
-
                 if not text_matches_lang_script(original, translate_to):
                     translated, detected = await translate_text(original, translate_to)
 
                     def _lang_base(code: str) -> str:
                         return (code or "").split("-")[0].lower()
-
                     same_lang = _lang_base(detected) and _lang_base(detected) == _lang_base(translate_to)
-
                     is_valid = (
                         not same_lang
                         and translated
                         and translated.strip().lower() != original.lower()
                         and any(ch.isalpha() for ch in translated)
                     )
-
                     if is_valid:
                         sender_info = format_user_info(message.from_user) if message.from_user else "Неизвестный"
                         lang_name = TRANSLATE_LANGS.get(translate_to, translate_to)
@@ -3549,22 +3483,14 @@ async def handle_business_message(message: types.Message):
             logger.error(f"[CMD] Не удалось удалить команду: {e}")
 
         if text == ".id":
-            await bot.send_message(
-                chat_id,
-                premium(f"<b>Telegram ID:</b> <code>{chat_id}</code>"),
-                parse_mode="HTML",
-                business_connection_id=bc_id
-            )
+            await bot.send_message(chat_id, premium(f"<b>Telegram ID:</b> <code>{chat_id}</code>"), parse_mode="HTML", business_connection_id=bc_id)
             return
-
         if text == ".snos":
             await animate_snos(chat_id, message, bc_id)
             return
-
         if text == ".dox":
             await animate_dox(chat_id, message, bc_id)
             return
-
         if text == ".chkstop":
             if chat_id in chk_games:
                 del chk_games[chat_id]
@@ -3572,7 +3498,6 @@ async def handle_business_message(message: types.Message):
             else:
                 await bot.send_message(user_id, premium("<b>❌ Шашки не запущены.</b>"), parse_mode="HTML")
             return
-
         if text == ".mute" or text.startswith(".mute "):
             parts = text.split(maxsplit=1)
             seconds = None
@@ -3599,14 +3524,12 @@ async def handle_business_message(message: types.Message):
             except Exception:
                 pass
             return
-
         if text == ".unmute":
             clear_mute(user_id, chat_id)
             await bot.send_message(chat_id, premium("<b>🔊 Вы размучены. Ваши сообщения больше не будут удаляться.</b>"),
                                    business_connection_id=bc_id, parse_mode="HTML")
             await bot.send_message(user_id, premium(f"<b>🔊 Чат {chat_id} размучен.</b>"), parse_mode="HTML")
             return
-
         if text.startswith(".spam "):
             parts = text.split(maxsplit=2)
             if len(parts) >= 3:
@@ -3626,11 +3549,9 @@ async def handle_business_message(message: types.Message):
             else:
                 await bot.send_message(user_id, premium("<b>❌ Неверный формат: .spam &lt;число&gt; &lt;текст&gt;</b>"), parse_mode="HTML")
                 return
-
         if text == ".duel":
             await start_duel(message)
             return
-
         if text.startswith(".anim "):
             anim_text = text.replace(".anim", "").strip()
             if not anim_text:
@@ -3638,11 +3559,9 @@ async def handle_business_message(message: types.Message):
                 return
             await animate_text(chat_id, anim_text, message)
             return
-
         if text == ".ttt":
             await start_ttt(message)
             return
-
         if text.startswith(".gn "):
             question = text.replace(".gn", "").strip()
             if not question:
@@ -3659,7 +3578,6 @@ async def handle_business_message(message: types.Message):
                 await loading.delete()
                 await bot.send_message(user_id, premium(f"<b>❌ Ошибка при обращении к Нейросети:\n{str(e)}</b>"), parse_mode="HTML")
             return
-
         if text == ".troll":
             if chat_id in troll_tasks:
                 await bot.send_message(user_id, "⚠️ Троллинг уже запущен в этом чате.", parse_mode="HTML")
@@ -3668,7 +3586,6 @@ async def handle_business_message(message: types.Message):
                 troll_tasks[chat_id] = task
                 await bot.send_message(user_id, "✅ Троллинг запущен! Сообщения будут отправляться собеседнику.", parse_mode="HTML")
             return
-
         if text == ".stoptroll":
             if chat_id in troll_tasks:
                 task = troll_tasks.pop(chat_id)
@@ -3681,17 +3598,14 @@ async def handle_business_message(message: types.Message):
             else:
                 await bot.send_message(user_id, "❌ Троллинг не был запущен.", parse_mode="HTML")
             return
-
         if text == ".echo":
             echo_enabled[(user_id, chat_id)] = True
             await bot.send_message(user_id, premium("<b>✅ Эхо включено.</b>"), parse_mode="HTML")
             return
-
         if text == ".noecho":
             echo_enabled.pop((user_id, chat_id), None)
             await bot.send_message(user_id, premium("<b>⏹ Эхо выключено.</b>"), parse_mode="HTML")
             return
-
         if text == ".flip":
             msg = await bot.send_message(chat_id, premium("<b>🪙 ...</b>"), parse_mode="HTML", business_connection_id=bc_id)
             for frame in ("🪙 ↺", "🪙 ↻", "🪙 ↺", "🪙 ↻"):
@@ -3706,7 +3620,6 @@ async def handle_business_message(message: types.Message):
             except Exception:
                 await bot.send_message(chat_id, premium(f"<b>{result}</b>"), parse_mode="HTML", business_connection_id=bc_id)
             return
-
         if text == ".gif":
             replied = message.reply_to_message
             if not replied:
@@ -3725,11 +3638,7 @@ async def handle_business_message(message: types.Message):
                 if not gif_path:
                     await bot.send_message(user_id, premium("<b>❌ Не удалось конвертировать.</b>"), parse_mode="HTML")
                 else:
-                    await bot.send_animation(
-                        chat_id,
-                        FSInputFile(gif_path),
-                        business_connection_id=bc_id
-                    )
+                    await bot.send_animation(chat_id, FSInputFile(gif_path), business_connection_id=bc_id)
                     try:
                         os.remove(gif_path)
                     except Exception:
@@ -3742,7 +3651,6 @@ async def handle_business_message(message: types.Message):
                 logger.error(f"[GIF] {e}")
                 await bot.send_message(user_id, premium(f"<b>❌ Ошибка GIF: {html.escape(str(e)[:100])}</b>"), parse_mode="HTML")
             return
-
         if text == ".ping":
             t0 = time.time()
             try:
@@ -3772,7 +3680,6 @@ async def handle_business_message(message: types.Message):
                 business_connection_id=bc_id
             )
             return
-
         if text.startswith(".calc"):
             expr = text[5:].strip()
             if not expr:
@@ -3789,7 +3696,6 @@ async def handle_business_message(message: types.Message):
             except Exception:
                 await bot.send_message(user_id, premium("<b>❌ Неверное выражение.</b>"), parse_mode="HTML")
             return
-
         if text == ".chk":
             if chat_id in chk_games:
                 await bot.send_message(user_id, premium("<b>⚠️ Шашки уже идут.</b>"), parse_mode="HTML")
@@ -3803,7 +3709,6 @@ async def handle_business_message(message: types.Message):
                 business_connection_id=bc_id
             )
             return
-
         if text == ".word" or text.startswith(".word "):
             if chat_id in word_games:
                 await bot.send_message(user_id, premium("<b>⚠️ Игра уже идёт. Ход: .слово</b>"), parse_mode="HTML")
@@ -3833,7 +3738,6 @@ async def handle_business_message(message: types.Message):
             except Exception:
                 pass
             return
-
         if text == ".ms":
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [
@@ -3850,10 +3754,8 @@ async def handle_business_message(message: types.Message):
                 reply_markup=kb
             )
             return
-
         return
 
-    # ход в шашках: .a3b4
     if message.text and chat_id in chk_games and re.fullmatch(r"\.[a-hA-H][1-8][a-hA-H][1-8]", message.text.strip()):
         game = chk_games[chat_id]
         move = chk_parse_move(message.text.strip())
@@ -3886,10 +3788,8 @@ async def handle_business_message(message: types.Message):
                         )
                 else:
                     await bot.send_message(chat_id, premium("<b>❌ Недопустимый ход</b>"), parse_mode="HTML", business_connection_id=bc_id)
-        # don't return — continue saving message flow optionally
         return
 
-    # ход в слове: .ответ
     if message.text and chat_id in word_games and message.text.startswith(".") and message.text.strip() not in KNOWN_COMMANDS:
         guess = message.text.strip()[1:].lower()
         if guess and re.fullmatch(r"[a-zа-яё]+", guess, re.I):
@@ -3912,14 +3812,12 @@ async def handle_business_message(message: types.Message):
                 )
             return
 
-    # echo
     if not is_owner and sender_id and echo_enabled.get((user_id, chat_id)) and message.text and not message.text.startswith("."):
         try:
             await bot.send_message(chat_id, message.text, business_connection_id=bc_id)
         except Exception as e:
             logger.error(f"[ECHO] {e}")
 
-    # .ms доступен любому участнику чата
     if message.text and message.text.strip() == ".ms" and not is_owner:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [
@@ -3942,7 +3840,6 @@ async def handle_business_message(message: types.Message):
         return
 
     if is_muted_now(user_id, chat_id) and not is_owner:
-
         try:
             await bot.delete_business_messages(business_connection_id=bc_id, message_ids=[message.message_id])
             logger.info(f"[MUTE] Сообщение {message.message_id} удалено")
@@ -3973,6 +3870,7 @@ async def handle_business_message(message: types.Message):
             content_lines,
         )
         await send_notification(user_id, notif_text, files)
+
 
 @dp.edited_business_message()
 async def handle_edited_business_message(message: types.Message):
@@ -4020,6 +3918,7 @@ async def handle_edited_business_message(message: types.Message):
     await send_notification(user_id, notif_text, files_list)
     db.increment_stat(user_id, "edited_count")
 
+
 @dp.deleted_business_messages()
 async def handle_deleted_business_messages(event: BusinessMessagesDeleted):
     bc_id = event.business_connection_id
@@ -4051,6 +3950,7 @@ async def handle_deleted_business_messages(event: BusinessMessagesDeleted):
         db.delete_message(bc_id, msg_id)
         db.increment_stat(user_id, "deleted_count")
 
+
 async def online_mode_loop():
     logger.info("[ONLINE] Фоновая задача запущена")
     while True:
@@ -4062,11 +3962,9 @@ async def online_mode_loop():
                     user_id = conn["user_id"]
                 except Exception:
                     continue
-
                 chat_id = db.get_last_chat_for_bc(bc_id)
                 if not chat_id:
                     continue
-
                 try:
                     await bot.send_chat_action(
                         chat_id=chat_id,
@@ -4076,11 +3974,10 @@ async def online_mode_loop():
                     logger.debug(f"[ONLINE] Пинг {bc_id} → chat {chat_id}")
                 except Exception as e:
                     logger.debug(f"[ONLINE] Ошибка пинга {bc_id}: {e}")
-
         except Exception as e:
             logger.error(f"[ONLINE] Ошибка цикла: {e}")
-
         await asyncio.sleep(20)
+
 
 async def auto_restart_loop():
     RESTART_INTERVAL = 3 * 60 * 60
@@ -4091,6 +3988,7 @@ async def auto_restart_loop():
         await asyncio.sleep(1)
         os._exit(0)
 
+
 async def main():
     try:
         me = await bot.get_me()
@@ -4098,19 +3996,17 @@ async def main():
     except Exception as e:
         logger.error(f"❌ Ошибка подключения к Telegram API: {e}")
         raise
-
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         logger.info("✅ Вебхук удалён (если был)")
     except Exception as e:
         logger.warning(f"Не удалось удалить вебхук: {e}")
-
     asyncio.create_task(online_mode_loop())
     asyncio.create_task(mini_app_server())
     asyncio.create_task(auto_restart_loop())
-
     await bot.set_my_commands([types.BotCommand(command="start", description=premium("Главное меню"))])
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     while True:
