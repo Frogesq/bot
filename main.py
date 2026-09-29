@@ -66,7 +66,7 @@ GIGACHAT_CHAT_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completion
 GIGACHAT_MODEL = "GigaChat"
 
 FREE_MODELS = {"gigachat_free": GIGACHAT_MODEL}
-MODEL_NAMES = {GIGACHAT_MODEL: "GigaChatAPI Free"}
+MODEL_NAMES = {GIGACHAT_MODEL: "GigaChatApi free"}
 DEFAULT_AI_MODEL = GIGACHAT_MODEL
 DEFAULT_AI_PROMPT = (
     "Ты вежливый и полезный ассистент. Отвечай кратко и по делу на русском языке. "
@@ -193,9 +193,15 @@ class GigaChatAPI:
                 raise RuntimeError("GIGACHAT_AUTH_KEY не задан в .env")
             response = requests.post(
                 GIGACHAT_OAUTH_URL,
-                headers={"Authorization": f"Basic {self.auth_key}", "RqUID": str(__import__("uuid").uuid4()),
-                         "Content-Type": "application/x-www-form-urlencoded"},
-                data={"scope": GIGACHAT_SCOPE}, timeout=30, verify=False)
+                headers={
+                    "Authorization": f"Basic {self.auth_key}",
+                    "RqUID": str(__import__("uuid").uuid4()),
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                data={"scope": GIGACHAT_SCOPE},
+                timeout=30,
+                verify=False,
+            )
             response.raise_for_status()
             data = response.json()
             self.access_token = data["access_token"]
