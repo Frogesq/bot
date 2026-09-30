@@ -82,6 +82,20 @@ PRO_DAYS = int(os.getenv("PRO_DAYS", "7"))
 EFFECT_MSG_ROBOT = "5107153978269893301"  # 👨‍💻 robot
 EFFECT_MSG_HEART = "5159385139981059251"  # ❤️ hearts
 
+async def send_with_effect(method, *, effect_id: str | None = None, **kwargs):
+    """Send message/photo with effect; fallback without effect on BadRequest."""
+    if effect_id:
+        try:
+            return await method(**kwargs, message_effect_id=effect_id)
+        except Exception as e:
+            err = str(e).lower()
+            if "effect" in err or "bad request" in err:
+                logger.warning(f"[EFFECT] fallback without effect: {e}")
+            else:
+                raise
+    return await method(**kwargs)
+
+
 # ============ ЛУЧШИЕ РАБОТАЮЩИЕ БЕСПЛАТНЫЕ МОДЕЛИ ============
 FREE_MODELS = {
     "auto_free": "openrouter/free",
@@ -2289,15 +2303,17 @@ async def start_command(message: types.Message):
     )
     if os.path.exists(BANNER_PATH):
         banner = FSInputFile(BANNER_PATH)
-        await message.answer_photo(
+        await send_with_effect(
+            message.answer_photo,
+            effect_id=EFFECT_MSG_ROBOT,
             photo=banner, caption=main_text, parse_mode="HTML",
             reply_markup=main_menu_keyboard(is_admin),
-            message_effect_id=EFFECT_MSG_ROBOT,
         )
     else:
-        await message.answer(
-            main_text, reply_markup=main_menu_keyboard(is_admin), parse_mode="HTML",
-            message_effect_id=EFFECT_MSG_ROBOT,
+        await send_with_effect(
+            message.answer,
+            effect_id=EFFECT_MSG_ROBOT,
+            text=main_text, reply_markup=main_menu_keyboard(is_admin), parse_mode="HTML",
         )
 
 @dp.message(Command("duel"))
@@ -2623,21 +2639,23 @@ async def check_subscription(callback: types.CallbackQuery):
             )
             if os.path.exists(BANNER_PATH):
                 banner = FSInputFile(BANNER_PATH)
-                await bot.send_photo(
+                await send_with_effect(
+                    bot.send_photo,
+                    effect_id=EFFECT_MSG_ROBOT,
                     chat_id=user_id,
                     photo=banner,
                     caption=main_text,
                     parse_mode="HTML",
                     reply_markup=main_menu_keyboard(is_admin),
-                    message_effect_id=EFFECT_MSG_ROBOT,
                 )
             else:
-                await bot.send_message(
+                await send_with_effect(
+                    bot.send_message,
+                    effect_id=EFFECT_MSG_ROBOT,
                     chat_id=user_id,
                     text=main_text,
                     parse_mode="HTML",
                     reply_markup=main_menu_keyboard(is_admin),
-                    message_effect_id=EFFECT_MSG_ROBOT,
                 )
         await callback.answer("✅ Подписка подтверждена!", show_alert=True)
     else:
@@ -3546,15 +3564,16 @@ async def handle_business_connection(connection: BusinessConnection):
         logger.error(f"[REF] Ошибка начисления: {e}")
 
     try:
-        await bot.send_message(
-            user_id,
-            premium(
+        await send_with_effect(
+            bot.send_message,
+            effect_id=EFFECT_MSG_HEART,
+            chat_id=user_id,
+            text=premium(
                 "<b>✅ Ваш бизнес-аккаунт успешно подключён к XrayGram!\n\n"
                 "Теперь я буду отслеживать все ваши личные чаты и присылать вам копии удалённых или изменённых сообщений.\n\n"
                 "Если у вас возникнут вопросы — обратитесь в поддержку @SupXrayGramRobot.</b>"
             ),
             parse_mode="HTML",
-            message_effect_id=EFFECT_MSG_HEART,
         )
     except Exception as e:
         logger.error(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
