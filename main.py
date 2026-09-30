@@ -69,7 +69,7 @@ OPENROUTER_FREE_MODEL = os.getenv("OPENROUTER_FREE_MODEL", "openrouter/free")
 
 RANVIK_API_KEY = os.getenv("RANVIK_API_KEY", "RANVIK_API_KEY")
 RANVIK_API_BASE = os.getenv("RANVIK_API_BASE", "https://api.ranvik.ru/v1")
-RANVIK_MODEL = os.getenv("RANVIK_MODEL", "grok-3")
+RANVIK_MODEL = os.getenv("RANVIK_MODEL", "grok-4.7")
 RANVIK_URL = f"{RANVIK_API_BASE}/chat/completions"
 
 CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN", "CRYPTO_PAY_TOKEN")
@@ -78,6 +78,9 @@ CRYPTO_PAY_API = os.getenv("CRYPTO_PAY_API", "https://pay.crypt.bot/api")
 PRO_PRICE_RUB = float(os.getenv("PRO_PRICE_RUB", "150"))
 PRO_PRICE_STARS = int(os.getenv("PRO_PRICE_STARS", "100"))  # ~150 ₽
 PRO_DAYS = int(os.getenv("PRO_DAYS", "7"))
+# Telegram message effects (long-press "send" animations)
+EFFECT_MSG_ROBOT = "5107153978269893301"  # 👨‍💻 robot
+EFFECT_MSG_HEART = "5159385139981059251"  # ❤️ hearts
 
 # ============ ЛУЧШИЕ РАБОТАЮЩИЕ БЕСПЛАТНЫЕ МОДЕЛИ ============
 FREE_MODELS = {
@@ -920,6 +923,10 @@ class SettingsInputStates(StatesGroup):
     waiting_ai_prompt = State()
 
 
+class AdminStates(StatesGroup):
+    waiting_pro_user_id = State()
+
+
 ttt_games = {}
 
 
@@ -1365,6 +1372,7 @@ def admin_panel_keyboard():
         [InlineKeyboardButton(text="📄 Список пользователей (txt)", callback_data="users_txt", style="primary")],
         [InlineKeyboardButton(text="🔗 Активные подключения", callback_data="active_connections", style="primary")],
         [InlineKeyboardButton(text="⭐ Рефералы", callback_data="ref_admin", style="primary")],
+        [InlineKeyboardButton(text="💎 Выдать Pro", callback_data="admin_grant_pro", style="primary")],
         [InlineKeyboardButton(text="Назад", callback_data="back_to_main", style="danger", icon_custom_emoji_id="5877536313623711363")]
     ])
 
@@ -2281,9 +2289,16 @@ async def start_command(message: types.Message):
     )
     if os.path.exists(BANNER_PATH):
         banner = FSInputFile(BANNER_PATH)
-        await message.answer_photo(photo=banner, caption=main_text, parse_mode="HTML", reply_markup=main_menu_keyboard(is_admin))
+        await message.answer_photo(
+            photo=banner, caption=main_text, parse_mode="HTML",
+            reply_markup=main_menu_keyboard(is_admin),
+            message_effect_id=EFFECT_MSG_ROBOT,
+        )
     else:
-        await message.answer(main_text, reply_markup=main_menu_keyboard(is_admin), parse_mode="HTML")
+        await message.answer(
+            main_text, reply_markup=main_menu_keyboard(is_admin), parse_mode="HTML",
+            message_effect_id=EFFECT_MSG_ROBOT,
+        )
 
 @dp.message(Command("duel"))
 async def cmd_duel(message: types.Message):
@@ -2613,14 +2628,16 @@ async def check_subscription(callback: types.CallbackQuery):
                     photo=banner,
                     caption=main_text,
                     parse_mode="HTML",
-                    reply_markup=main_menu_keyboard(is_admin)
+                    reply_markup=main_menu_keyboard(is_admin),
+                    message_effect_id=EFFECT_MSG_ROBOT,
                 )
             else:
                 await bot.send_message(
                     chat_id=user_id,
                     text=main_text,
                     parse_mode="HTML",
-                    reply_markup=main_menu_keyboard(is_admin)
+                    reply_markup=main_menu_keyboard(is_admin),
+                    message_effect_id=EFFECT_MSG_ROBOT,
                 )
         await callback.answer("✅ Подписка подтверждена!", show_alert=True)
     else:
@@ -3280,10 +3297,11 @@ async def admin_panel(callback: types.CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "back_to_admin")
-async def back_to_admin(callback: types.CallbackQuery):
+async def back_to_admin(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("⛔ Доступ запрещён.", show_alert=True)
         return
+    await state.clear()
     text = premium("<b>⚙️ Админ-панель XrayGram\n\nВыберите действие:</b>")
     await safe_edit_or_send(callback.message, text, admin_panel_keyboard())
     await callback.answer()
@@ -3528,11 +3546,16 @@ async def handle_business_connection(connection: BusinessConnection):
         logger.error(f"[REF] Ошибка начисления: {e}")
 
     try:
-        await bot.send_message(user_id,
-            premium("<b>✅ Ваш бизнес-аккаунт успешно подключён к XrayGram!\n\n"
-                    "Теперь я буду отслеживать все ваши личные чаты и присылать вам копии удалённых или изменённых сообщений.\n\n"
-                    "Если у вас возникнут вопросы — обратитесь в поддержку @SupXrayGramRobot.</b>"),
-            parse_mode="HTML")
+        await bot.send_message(
+            user_id,
+            premium(
+                "<b>✅ Ваш бизнес-аккаунт успешно подключён к XrayGram!\n\n"
+                "Теперь я буду отслеживать все ваши личные чаты и присылать вам копии удалённых или изменённых сообщений.\n\n"
+                "Если у вас возникнут вопросы — обратитесь в поддержку @SupXrayGramRobot.</b>"
+            ),
+            parse_mode="HTML",
+            message_effect_id=EFFECT_MSG_HEART,
+        )
     except Exception as e:
         logger.error(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
 
@@ -4352,6 +4375,25 @@ async def main():
 
 
 
+
+async def notify_admin_pro(user_id: int, method: str, until_ts: float):
+    if not ADMIN_ID:
+        return
+    until_s = datetime.fromtimestamp(until_ts).strftime("%d.%m.%Y %H:%M")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            premium(
+                f"<b>💎 Pro куплен!</b>\n\n"
+                f"🆔 ID: <code>{user_id}</code>\n"
+                f"💳 Способ: {html.escape(method)}\n"
+                f"📅 До: {until_s}"
+            ),
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.error(f"[PRO] notify admin: {e}")
+
 # ============ Pro оплата ============
 def pro_pay_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -4468,6 +4510,7 @@ async def pro_check_crypto(callback: types.CallbackQuery):
             premium(f"<b>✅ Pro активирован</b> до {until_s}\nGrok для .gn и AI."),
             parse_mode="HTML",
         )
+        await notify_admin_pro(uid, "CryptoBot", until)
     except Exception as e:
         logger.error(f"[PRO] check crypto: {e}")
         await callback.answer(f"Ошибка: {str(e)[:80]}", show_alert=True)
@@ -4493,7 +4536,57 @@ async def pro_successful_payment(message: types.Message):
         premium(f"<b>✅ Pro активирован</b> до {until_s}\nGrok для .gn и AI."),
         parse_mode="HTML",
     )
+    await notify_admin_pro(user_id, "Telegram Stars", until)
 
+
+
+@dp.callback_query(lambda c: c.data == "admin_grant_pro")
+async def admin_grant_pro(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔ Доступ запрещён.", show_alert=True)
+        return
+    await state.set_state(AdminStates.waiting_pro_user_id)
+    await safe_edit_or_send(
+        callback.message,
+        premium(
+            f"<b>💎 Выдать Pro</b>\n\n"
+            f"Отправьте <b>Telegram ID</b> пользователя.\n"
+            f"Подписка на <b>{PRO_DAYS}</b> дней (Grok).\n\n"
+            "Пример: <code>123456789</code>"
+        ),
+        InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_admin", style="danger")
+        ]]),
+    )
+    await callback.answer()
+
+
+@dp.message(StateFilter(AdminStates.waiting_pro_user_id))
+async def admin_grant_pro_id(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
+        return
+    raw = (message.text or "").strip()
+    if not raw.isdigit():
+        await message.answer(premium("<b>❌ Нужен числовой ID</b>"), parse_mode="HTML")
+        return
+    target_id = int(raw)
+    until = extend_pro(target_id, PRO_DAYS)
+    until_s = datetime.fromtimestamp(until).strftime("%d.%m.%Y %H:%M")
+    await state.clear()
+    await message.answer(
+        premium(f"<b>✅ Pro выдан</b>\n\n🆔 <code>{target_id}</code>\n📅 до {until_s}"),
+        parse_mode="HTML",
+        reply_markup=admin_panel_keyboard(),
+    )
+    try:
+        await bot.send_message(
+            target_id,
+            premium(f"<b>💎 Вам выдан Pro!</b>\n\nGrok для .gn и AI до <b>{until_s}</b>."),
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning(f"[PRO] notify user {target_id}: {e}")
 
 
 if __name__ == "__main__":
