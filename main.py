@@ -72,7 +72,7 @@ RANVIK_API_BASE = os.getenv("RANVIK_API_BASE", "https://api.ranvik.ru/v1")
 RANVIK_MODEL = os.getenv("RANVIK_MODEL", "grok-3")
 RANVIK_URL = f"{RANVIK_API_BASE}/chat/completions"
 
-CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN", "640522:AAAhcsQmaZGkUOyOEf2rODHAyk7hLYiqFTs")
+CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN", "CRYPTO_PAY_TOKEN")
 CRYPTO_PAY_API = os.getenv("CRYPTO_PAY_API", "https://pay.crypt.bot/api")
 
 PRO_PRICE_RUB = float(os.getenv("PRO_PRICE_RUB", "150"))
@@ -920,6 +920,10 @@ class SettingsInputStates(StatesGroup):
     waiting_ai_prompt = State()
 
 
+class AdminStates(StatesGroup):
+    waiting_pro_user_id = State()
+
+
 ttt_games = {}
 
 
@@ -1365,6 +1369,7 @@ def admin_panel_keyboard():
         [InlineKeyboardButton(text="📄 Список пользователей (txt)", callback_data="users_txt", style="primary")],
         [InlineKeyboardButton(text="🔗 Активные подключения", callback_data="active_connections", style="primary")],
         [InlineKeyboardButton(text="⭐ Рефералы", callback_data="ref_admin", style="primary")],
+        [InlineKeyboardButton(text="💎 Выдать Pro", callback_data="admin_grant_pro", style="primary")],
         [InlineKeyboardButton(text="Назад", callback_data="back_to_main", style="danger", icon_custom_emoji_id="5877536313623711363")]
     ])
 
@@ -2269,15 +2274,16 @@ async def start_command(message: types.Message):
     first_name = user.first_name or "друг"
     main_text = premium(
         f"<b>👋 Привет, {html.escape(first_name)}, добро пожаловать в XrayGram!</b>\n\n"
-        "<b>🤖 Что умеет бот:</b>\n"
-        "<blockquote expandable>Отслеживает удалённые сообщения в ваших личных чатах и присылает их копии.\n\n"
-        "Показывает изменения в отредактированных сообщениях (было → стало).\n\n"
-        "Сохраняет самоуничтожающиеся медиа. (Чтобы сохранить надо ответить на сообщение с одноразовым медиа)\n\n"
-        "Генерирует ответы на вопросы прямо в чате с помощью XrayGPT 1.0.\n\n"
-        "Может выполнять всякие команды в личных чатах. (Чтобы узнать подробнее нажмите в меню кнопку «Команды».)\n\n"
-        "Проверяет собеседника на СКАМ/СПАМ.\n\n"
-        "Может автоматически редактироваать ваши собственные сообщения, применяя выбранный стиль.\n\n"
-        "Авто переводит личные сообщения.</blockquote>"
+        "<b>🔥 🤖 Что умеет бот:</b>\n"
+        "<blockquote expandable>"
+        "💬 Отслеживает удалённые сообщения в ваших личных чатах и присылает их копии.\n\n"
+        "✏️ Показывает изменения в отредактированных сообщениях (было → стало).\n\n"
+        "💾 Сохраняет самоуничтожающиеся медиа. (Ответьте на одноразовое медиа)\n\n"
+        "🤖 Генерирует ответы в чате (XrayGPT / Grok Pro).\n\n"
+        "🔥 Команды в личных чатах — кнопка «Команды».\n\n"
+        "🛡 Проверяет собеседника на СКАМ/СПАМ.\n\n"
+        "📝 Авто-стиль сообщений и 🌐 автоперевод."
+        "</blockquote>"
     )
     if os.path.exists(BANNER_PATH):
         banner = FSInputFile(BANNER_PATH)
@@ -3280,10 +3286,11 @@ async def admin_panel(callback: types.CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "back_to_admin")
-async def back_to_admin(callback: types.CallbackQuery):
+async def back_to_admin(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("⛔ Доступ запрещён.", show_alert=True)
         return
+    await state.clear()
     text = premium("<b>⚙️ Админ-панель XrayGram\n\nВыберите действие:</b>")
     await safe_edit_or_send(callback.message, text, admin_panel_keyboard())
     await callback.answer()
@@ -3529,9 +3536,14 @@ async def handle_business_connection(connection: BusinessConnection):
 
     try:
         await bot.send_message(user_id,
-            premium("<b>✅ Ваш бизнес-аккаунт успешно подключён к XrayGram!\n\n"
-                    "Теперь я буду отслеживать все ваши личные чаты и присылать вам копии удалённых или изменённых сообщений.\n\n"
-                    "Если у вас возникнут вопросы — обратитесь в поддержку @SupXrayGramRobot.</b>"),
+            premium(
+                "<b>✅ 🔌 Ваш бизнес-аккаунт успешно подключён к XrayGram!</b>\n\n"
+                "👁 Теперь я буду отслеживать все ваши личные чаты.\n\n"
+                "💬 Копии удалённых сообщений\n"
+                "✏️ Уведомления об изменениях\n"
+                "💾 Сохранение одноразовых медиа\n\n"
+                "Вопросы — @SupXrayGramRobot"
+            ),
             parse_mode="HTML")
     except Exception as e:
         logger.error(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
@@ -4352,6 +4364,25 @@ async def main():
 
 
 
+
+async def notify_admin_pro(user_id: int, method: str, until_ts: float):
+    if not ADMIN_ID:
+        return
+    until_s = datetime.fromtimestamp(until_ts).strftime("%d.%m.%Y %H:%M")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            premium(
+                f"<b>💎 Pro куплен!</b>\n\n"
+                f"🆔 ID: <code>{user_id}</code>\n"
+                f"💳 Способ: {html.escape(method)}\n"
+                f"📅 До: {until_s}"
+            ),
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.error(f"[PRO] notify admin: {e}")
+
 # ============ Pro оплата ============
 def pro_pay_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -4468,6 +4499,7 @@ async def pro_check_crypto(callback: types.CallbackQuery):
             premium(f"<b>✅ Pro активирован</b> до {until_s}\nGrok для .gn и AI."),
             parse_mode="HTML",
         )
+        await notify_admin_pro(uid, "CryptoBot", until)
     except Exception as e:
         logger.error(f"[PRO] check crypto: {e}")
         await callback.answer(f"Ошибка: {str(e)[:80]}", show_alert=True)
@@ -4493,7 +4525,57 @@ async def pro_successful_payment(message: types.Message):
         premium(f"<b>✅ Pro активирован</b> до {until_s}\nGrok для .gn и AI."),
         parse_mode="HTML",
     )
+    await notify_admin_pro(user_id, "Telegram Stars", until)
 
+
+
+@dp.callback_query(lambda c: c.data == "admin_grant_pro")
+async def admin_grant_pro(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔ Доступ запрещён.", show_alert=True)
+        return
+    await state.set_state(AdminStates.waiting_pro_user_id)
+    await safe_edit_or_send(
+        callback.message,
+        premium(
+            f"<b>💎 Выдать Pro</b>\n\n"
+            f"Отправьте <b>Telegram ID</b> пользователя.\n"
+            f"Подписка на <b>{PRO_DAYS}</b> дней (Grok).\n\n"
+            "Пример: <code>123456789</code>"
+        ),
+        InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_admin", style="danger")
+        ]]),
+    )
+    await callback.answer()
+
+
+@dp.message(StateFilter(AdminStates.waiting_pro_user_id))
+async def admin_grant_pro_id(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await state.clear()
+        return
+    raw = (message.text or "").strip()
+    if not raw.isdigit():
+        await message.answer(premium("<b>❌ Нужен числовой ID</b>"), parse_mode="HTML")
+        return
+    target_id = int(raw)
+    until = extend_pro(target_id, PRO_DAYS)
+    until_s = datetime.fromtimestamp(until).strftime("%d.%m.%Y %H:%M")
+    await state.clear()
+    await message.answer(
+        premium(f"<b>✅ Pro выдан</b>\n\n🆔 <code>{target_id}</code>\n📅 до {until_s}"),
+        parse_mode="HTML",
+        reply_markup=admin_panel_keyboard(),
+    )
+    try:
+        await bot.send_message(
+            target_id,
+            premium(f"<b>💎 Вам выдан Pro!</b>\n\nGrok для .gn и AI до <b>{until_s}</b>."),
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.warning(f"[PRO] notify user {target_id}: {e}")
 
 
 if __name__ == "__main__":
