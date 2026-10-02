@@ -1012,7 +1012,7 @@ KNOWN_COMMANDS = (
     ".mute", ".unmute", ".spam", ".duel",
     ".anim", ".ttt", ".gn", ".troll", ".stoptroll", ".snos", ".id",
     ".echo", ".noecho", ".flip", ".gif", ".ping", ".calc",
-    ".chk", ".chkstop", ".word", ".ms", ".dox", ".info", ".sekret",
+    ".chk", ".chkstop", ".word", ".ms", ".dox", ".info", ".secret",
 )
 
 BOT_START_TIME = time.time()
@@ -1465,7 +1465,7 @@ async def animate_snos(chat_id: int, message: types.Message, bc_id: str | None =
 
 
 
-async def animate_sekret(chat_id: int, message: types.Message, bc_id: str | None = None):
+async def animate_secret(chat_id: int, message: types.Message, bc_id: str | None = None):
     frames = [
         "8===D     ✊",
         "8===D    ✊",
@@ -1701,7 +1701,7 @@ COMMAND_INFOS = {
     "word": "<b>.word [слово]</b>\n\nИгра «слово».\n<code>.word</code> — случайное\n<code>.word секрет</code> — своё\nХод: <code>.ответ</code>",
     "ms": "<b>.ms</b>\n\nСапёр. 6×6 / 8×8 / 9×9, бомбы 5 / 8 / авто.",
     "info": "<b>.info</b>\n\nИнформация о Telegram-аккаунте собеседника.",
-    "sekret": "<b>.sekret</b>\n\nСекретная NSFW-анимация.",
+    "secret": "<b>.secret</b>\n\nСекретная 18+-анимация.",
 }
 
 
@@ -1714,7 +1714,7 @@ def commands_keyboard():
         (".echo", "echo"), (".noecho", "noecho"), (".flip", "flip"),
         (".gif", "gif"), (".ping", "ping"), (".calc", "calc"),
         (".chk", "chk"), (".word", "word"), (".ms", "ms"),
-        (".info", "info"), (".sekret", "sekret"),
+        (".info", "info"), (".secret", "secret"),
     ]
     rows = []
     for i in range(0, len(cmds), 3):
@@ -4394,8 +4394,8 @@ async def handle_business_message(message: types.Message):
             await animate_dox(chat_id, message, bc_id)
             return
 
-        if text == ".sekret":
-            await animate_sekret(chat_id, message, bc_id)
+        if text == ".secret":
+            await animate_secret(chat_id, message, bc_id)
             return
 
         if text == ".chkstop":
