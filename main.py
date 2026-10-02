@@ -17,7 +17,7 @@ import ast
 import operator
 import subprocess
 import tempfile
-from datetime import datetimeф
+from datetime import datetime
 from io import BytesIO
 from urllib.parse import parse_qsl
 from dotenv import load_dotenv
