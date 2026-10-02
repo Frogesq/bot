@@ -60,7 +60,7 @@ INSTRUCTION_IMAGE_PATH = os.path.join(BASE_DIR, "instruction.jpg")
 BANNER_PATH = os.path.join(BASE_DIR, "banner.png")
 MINI_APP_DIR = os.path.join(BASE_DIR, "mini_app")
 MINI_APP_URL = "https://xraygram.bothost.tech"
-CHANNEL_USERNAME = "@XrayGramSociety"
+CHANNEL_USERNAME = "@NovoeTelegram"
 BOT_USERNAME = "XrayGramRobot"
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
@@ -331,6 +331,59 @@ def _mark_invoice_paid(invoice_id: str) -> int | None:
 
 # ============ AI: Free = OpenRouter, Pro = Ranvik (Grok) ============
 _ai_lock = threading.Lock()  # 1 поток на провайдера при необходимости
+
+
+def _user_flags_conn():
+    import sqlite3
+    conn = sqlite3.connect(PRO_DB_PATH, timeout=30)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS user_flags ("
+        "user_id INTEGER NOT NULL,"
+        "key TEXT NOT NULL,"
+        "value INTEGER NOT NULL,"
+        "PRIMARY KEY(user_id, key))"
+    )
+    conn.commit()
+    return conn
+
+
+def get_user_flag(user_id: int, key: str, default: bool = False) -> bool:
+    try:
+        conn = _user_flags_conn()
+        row = conn.execute(
+            "SELECT value FROM user_flags WHERE user_id=? AND key=?",
+            (user_id, key),
+        ).fetchone()
+        conn.close()
+        if row is None:
+            return default
+        return bool(row[0])
+    except Exception as e:
+        logging.error(f"[FLAGS] get {key}: {e}")
+        return default
+
+
+def set_user_flag(user_id: int, key: str, value: bool):
+    try:
+        conn = _user_flags_conn()
+        conn.execute(
+            "INSERT INTO user_flags(user_id, key, value) VALUES(?,?,?) "
+            "ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value",
+            (user_id, key, 1 if value else 0),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.error(f"[FLAGS] set {key}: {e}")
+
+
+def get_link_guard(user_id: int) -> bool:
+    return get_user_flag(user_id, "link_guard", False)
+
+
+def set_link_guard(user_id: int, on: bool):
+    set_user_flag(user_id, "link_guard", on)
+
 
 
 def _openrouter_chat(messages: list, model: str = None, temperature: float = 0.7, max_tokens: int = 800) -> str:
@@ -780,7 +833,7 @@ KNOWN_COMMANDS = (
     ".mute", ".unmute", ".spam", ".duel",
     ".anim", ".ttt", ".gn", ".troll", ".stoptroll", ".snos", ".id",
     ".echo", ".noecho", ".flip", ".gif", ".ping", ".calc",
-    ".chk", ".chkstop", ".word", ".ms", ".dox",
+    ".chk", ".chkstop", ".word", ".ms", ".dox", ".info",
 )
 
 BOT_START_TIME = time.time()
@@ -1350,7 +1403,7 @@ def main_menu_keyboard(is_admin: bool = False):
         [InlineKeyboardButton(text="Заработать звёзды", callback_data="referral_menu", icon_custom_emoji_id="5258185631355378853")],
         [
             InlineKeyboardButton(text="Mini App", web_app=WebAppInfo(url=MINI_APP_URL), icon_custom_emoji_id="5280867942056108177"),
-            InlineKeyboardButton(text="Канал", url="https://t.me/XrayGramSociety", icon_custom_emoji_id="5260268501515377807"),
+            InlineKeyboardButton(text="Канал", url="https://t.me/NovoeTelegram", icon_custom_emoji_id="5260268501515377807"),
         ],
     ]
     if is_admin:
@@ -1360,7 +1413,7 @@ def main_menu_keyboard(is_admin: bool = False):
 
 def subscription_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Подписаться на канал", url="https://t.me/XrayGramSociety")]
+        [InlineKeyboardButton(text="📢 Подписаться на канал", url="https://t.me/NovoeTelegram")]
     ])
 
 
@@ -1427,6 +1480,7 @@ COMMAND_INFOS = {
     "chk": "<b>.chk</b>\n\nШашки. Ход: <code>.c3d4</code>. Стоп: <code>.chkstop</code>",
     "word": "<b>.word [слово]</b>\n\nИгра «слово».\n<code>.word</code> — случайное\n<code>.word секрет</code> — своё\nХод: <code>.ответ</code>",
     "ms": "<b>.ms</b>\n\nСапёр. 6×6 / 8×8 / 9×9, бомбы 5 / 8 / авто.",
+    "info": "<b>.info</b>\n\nИнформация о Telegram-аккаунте собеседника.",
 }
 
 
@@ -1439,6 +1493,7 @@ def commands_keyboard():
         (".echo", "echo"), (".noecho", "noecho"), (".flip", "flip"),
         (".gif", "gif"), (".ping", "ping"), (".calc", "calc"),
         (".chk", "chk"), (".word", "word"), (".ms", "ms"),
+        (".info", "info"),
     ]
     rows = []
     for i in range(0, len(cmds), 3):
@@ -1475,6 +1530,7 @@ def get_settings_text():
 def settings_keyboard(user_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Проверка на СКАМ/СПАМ", callback_data="scam_check_menu")],
+        [InlineKeyboardButton(text="Подозрительные ссылки", callback_data="link_guard_menu")],
         [InlineKeyboardButton(text="Режим текста", callback_data="text_mode_menu")],
         [InlineKeyboardButton(text="Авто перевод", callback_data="translate_menu")],
         [InlineKeyboardButton(text="Онлайн мод", callback_data="online_mode_menu")],
@@ -1500,10 +1556,12 @@ def get_scam_check_menu_text(user_id):
     return premium(
         "<b>Проверка на СКАМ/СПАМ</b>\n\n"
         f"<b>Статус:</b> {'Включена' if on else 'Выключена'}\n\n"
-        "Когда включено, бот проверяет каждого нового собеседника:\n"
-        "• по встроенным флагам Telegram (SCAM/FAKE)\n"
-        "• по базе SpamProtection API\n\n"
-        "Если собеседник помечен как скамер — вы получите уведомление."
+        "Когда включено, бот проверяет собеседника:\n"
+        "• флаги Telegram (SCAM / FAKE)\n"
+        "• SpamProtection API\n"
+        "• подозрительный username / имя\n"
+        "• признаки бота-скама\n\n"
+        "При срабатывании — уведомление вам в личку."
     )
 
 
@@ -1722,7 +1780,7 @@ async def ensure_subscription(user_id: int, notify: bool = True, force_notify: b
             user_id,
             premium(
                 "<b>📢 Для использования функций бота необходима подписка на наш канал!</b>\n\n"
-                "Подпишитесь на @XrayGramSociety, чтобы пользоваться всеми возможностями XrayGram.\n\n"
+                "Подпишитесь на @NovoeTelegram, чтобы пользоваться всеми возможностями XrayGram.\n\n"
                 "<i>После подписки функции включатся автоматически.</i>"
             ),
             parse_mode="HTML",
@@ -2046,6 +2104,84 @@ async def download_files(message: types.Message, user_id: int) -> list:
             logger.error(f"Ошибка скачивания {file_id}: {e}")
     return file_paths
 
+
+async def cmd_info_account(chat_id: int, bc_id: str | None, message: types.Message):
+    """Информация о собеседнике / чате (то, что отдаёт Telegram Bot API)."""
+    target_id = chat_id
+    target_user = None
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_user = message.reply_to_message.from_user
+        target_id = target_user.id
+    lines = ["<b>ℹ️ Информация об аккаунте</b>", ""]
+    try:
+        chat = await bot.get_chat(target_id)
+        lines.append(f"<b>ID:</b> <code>{getattr(chat, 'id', target_id)}</code>")
+        ctype = getattr(chat, "type", None) or "?"
+        lines.append(f"<b>Тип:</b> {html.escape(str(ctype))}")
+        uname = getattr(chat, "username", None)
+        lines.append(f"<b>Username:</b> @{html.escape(uname)}" if uname else "<b>Username:</b> —")
+        fn = getattr(chat, "first_name", None) or ""
+        ln = getattr(chat, "last_name", None) or ""
+        name = f"{fn} {ln}".strip()
+        lines.append(f"<b>Имя:</b> {html.escape(name) if name else '—'}")
+        bio = getattr(chat, "bio", None)
+        if bio:
+            lines.append(f"<b>Био:</b> {html.escape(str(bio)[:300])}")
+        for flag, label in (
+            ("is_premium", "Premium"),
+            ("is_verified", "Verified"),
+            ("is_scam", "SCAM"),
+            ("is_fake", "FAKE"),
+            ("is_forum", "Forum"),
+        ):
+            val = getattr(chat, flag, None)
+            if val is not None:
+                lines.append(f"<b>{label}:</b> {'да' if val else 'нет'}")
+        dc = getattr(chat, "has_private_forwards", None)
+        if dc is not None:
+            lines.append(f"<b>Private forwards:</b> {'да' if dc else 'нет'}")
+        if getattr(chat, "has_restricted_voice_and_video_messages", None) is not None:
+            lines.append(
+                f"<b>Restrict voice/video:</b> "
+                f"{'да' if chat.has_restricted_voice_and_video_messages else 'нет'}"
+            )
+        if getattr(chat, "active_usernames", None):
+            aus = ", ".join("@" + u for u in chat.active_usernames)
+            lines.append(f"<b>Активные username:</b> {html.escape(aus)}")
+    except Exception as e:
+        lines.append(f"<b>ID чата:</b> <code>{chat_id}</code>")
+        lines.append(f"<i>getChat: {html.escape(str(e)[:120])}</i>")
+
+    if target_user is None and message.from_user and message.from_user.id != chat_id:
+        # try peer from chat when available
+        pass
+    if target_user:
+        lines.append("")
+        lines.append("<b>Из сообщения:</b>")
+        lines.append(f"• language: {html.escape(target_user.language_code or '—')}")
+        lines.append(f"• is_bot: {'да' if target_user.is_bot else 'нет'}")
+        lines.append(f"• is_premium: {'да' if getattr(target_user, 'is_premium', False) else 'нет'}")
+
+    # extra scam lookup
+    try:
+        scam, reason = await check_scam(target_id, target_user)
+        lines.append("")
+        if scam:
+            lines.append(f"<b>⚠️ Антискам:</b> {html.escape(reason)}")
+        else:
+            lines.append("<b>Антискам:</b> явных меток нет")
+    except Exception:
+        pass
+
+    lines.append("")
+    lines.append("<i>Доступно только то, что отдаёт Telegram Bot API.</i>")
+    await bot.send_message(
+        chat_id,
+        premium("\n".join(lines)),
+        parse_mode="HTML",
+        business_connection_id=bc_id,
+    )
+
 def format_user_info(user: types.User) -> str:
     name = (user.first_name or "") + (" " + user.last_name if user.last_name else "")
     return f"{name} (@{user.username})" if user.username else f"{name} (ID: {user.id})"
@@ -2110,21 +2246,37 @@ async def send_notification(chat_id: int, text: str, files: list = None, parse_m
     except Exception as e:
         logger.error(f"Ошибка отправки уведомления: {e}")
 
-async def check_scam(user_id: int) -> tuple[bool, str]:
+async def check_scam(user_id: int, user: types.User | None = None) -> tuple[bool, str]:
     try:
         chat = await bot.get_chat(user_id)
-        if getattr(chat, 'is_scam', False):
+        if getattr(chat, "is_scam", False):
             return True, "Telegram пометил как SCAM"
-        if getattr(chat, 'is_fake', False):
+        if getattr(chat, "is_fake", False):
             return True, "Telegram пометил как FAKE"
+        uname = (getattr(chat, "username", None) or "") or ""
+        title = (getattr(chat, "first_name", None) or "") + " " + (getattr(chat, "last_name", None) or "")
+        bad_hit = _scam_name_hit(uname, title)
+        if bad_hit:
+            return True, bad_hit
+        if getattr(chat, "type", None) == "private" and getattr(chat, "is_premium", None) is False:
+            pass
     except Exception as e:
         logger.debug(f"[SCAM] get_chat {user_id}: {e}")
+
+    if user is not None:
+        uname = user.username or ""
+        title = f"{user.first_name or ''} {user.last_name or ''}"
+        bad_hit = _scam_name_hit(uname, title)
+        if bad_hit:
+            return True, bad_hit
+        if getattr(user, "is_bot", False) and _scam_name_hit(uname, title):
+            return True, "подозрительный бот"
 
     try:
         resp = requests.get(
             f"https://api.intellivoid.net/spamprotection/v1/lookup?query={user_id}",
             timeout=8,
-            verify=False
+            verify=False,
         )
         if resp.status_code == 200:
             data = resp.json()
@@ -2134,9 +2286,135 @@ async def check_scam(user_id: int) -> tuple[bool, str]:
                 if attrs.get("is_blacklisted"):
                     reason = attrs.get("blacklist_reason") or "найден в базе спама"
                     return True, f"SpamProtection: {reason}"
+                if attrs.get("is_potential_spammer"):
+                    return True, "SpamProtection: potential spammer"
+                if attrs.get("is_scammer"):
+                    return True, "SpamProtection: scammer"
     except Exception as e:
         logger.debug(f"[SCAM] SpamProtection {user_id}: {e}")
 
+    return False, ""
+
+
+_SCAM_NAME_RE = re.compile(
+    r"(support|security|helpdesk|admin|giveaway|airdrop|claim|wallet|seed|phrase|verify|аккаунт|служба\s*поддерж|безопасн|розыгрыш|бесплатн\w*\s*зв[её]зд)",
+    re.I,
+)
+
+
+def _scam_name_hit(username: str, title: str) -> str:
+    u = (username or "").lower()
+    t = (title or "").lower()
+    if _SCAM_NAME_RE.search(u) or _SCAM_NAME_RE.search(t):
+        return "подозрительное имя/username"
+    if u and sum(ch.isdigit() for ch in u) >= 5 and len(u) <= 12:
+        return "подозрительный username (много цифр)"
+    return ""
+
+
+_URL_RE = re.compile(
+    r"(?i)\b((?:https?://|www\.)[^\s<>\]]+|t\.me/[^\s<>\]]+|telegram\.me/[^\s<>\]]+)"
+)
+
+_SUSPICIOUS_LINK_RE = re.compile(
+    r"(?i)("
+    r"bit\.ly/|goo\.gl/|tinyurl\.|t\.co/|cutt\.ly/|rebrand\.ly/|"
+    r"telegram\.me/\+|t\.me/\+|t\.me/joinchat/|"
+    r"connect[-\s]?wallet|seed[-\s]?phrase|private[-\s]?key|"
+    r"free[-\s]?stars|get[-\s]?premium|claim[-\s]?reward|"
+    r"airdrop|giveaway|double[-\s]?your|"
+    r"\b[13][a-km-zA-HJ-NP-Z1-9]{25,}\b|"  # rough btc
+    r"\b0x[a-fA-F0-9]{40}\b"  # eth
+    r")"
+)
+
+_SCAM_PHRASE_RE = re.compile(
+    r"(?i)("
+    r"пришл(и|ите)\s+(код|seed|фразу|пароль)|"
+    r"подтвердите\s+аккаунт|"
+    r"ваш\s+аккаунт\s+(будет\s+)?заблок|"
+    r"служба\s+поддержки\s+telegram|"
+    r"free\s+telegram\s+premium|"
+    r"connect\s+your\s+wallet|"
+    r"send\s+\d+\s*(ton|usdt|btc)"
+    r")"
+)
+
+
+def extract_message_urls(message: types.Message) -> list[str]:
+    urls = []
+    text = message.text or message.caption or ""
+    entities = message.entities or message.caption_entities or []
+    for ent in entities:
+        try:
+            if ent.type == "url":
+                urls.append(text[ent.offset: ent.offset + ent.length])
+            elif ent.type == "text_link" and ent.url:
+                urls.append(ent.url)
+            elif ent.type == "mention":
+                urls.append(text[ent.offset: ent.offset + ent.length])
+        except Exception:
+            pass
+    for m in _URL_RE.finditer(text):
+        urls.append(m.group(1))
+    # dedupe
+    seen = set()
+    out = []
+    for u in urls:
+        u = u.strip().rstrip(".,);]")
+        low = u.lower()
+        if low not in seen:
+            seen.add(low)
+            out.append(u)
+    return out
+
+
+def analyze_suspicious_content(message: types.Message) -> tuple[bool, str]:
+    text = message.text or message.caption or ""
+    if _SCAM_PHRASE_RE.search(text):
+        return True, "подозрительная формулировка (фишинг/скам)"
+    urls = extract_message_urls(message)
+    for u in urls:
+        if _SUSPICIOUS_LINK_RE.search(u):
+            return True, f"подозрительная ссылка: {u[:80]}"
+        low = u.lower()
+        if "t.me/" in low or "telegram.me/" in low:
+            # bot links with scam-ish names
+            part = low.split("t.me/")[-1].split("telegram.me/")[-1].split("?")[0].strip("/")
+            if part.startswith("+") or "joinchat" in part:
+                return True, f"приглашение в закрытый чат: {u[:80]}"
+            if part.endswith("bot") and _SCAM_NAME_RE.search(part):
+                return True, f"подозрительный бот-ссылка: {u[:80]}"
+    if urls and _SCAM_NAME_RE.search(text):
+        return True, "ссылка + подозрительный контекст"
+    return False, ""
+
+
+async def analyze_suspicious_bots_in_message(message: types.Message) -> tuple[bool, str]:
+    text = message.text or message.caption or ""
+    entities = message.entities or message.caption_entities or []
+    candidates = []
+    for ent in entities:
+        if ent.type == "mention":
+            candidates.append(text[ent.offset: ent.offset + ent.length].lstrip("@"))
+        elif ent.type == "url" or ent.type == "text_link":
+            raw = ent.url if ent.type == "text_link" else text[ent.offset: ent.offset + ent.length]
+            low = (raw or "").lower()
+            if "t.me/" in low:
+                part = low.split("t.me/")[-1].split("?")[0].strip("/").split("/")[0]
+                if part.endswith("bot"):
+                    candidates.append(part)
+    for name in candidates:
+        if not name:
+            continue
+        if _SCAM_NAME_RE.search(name):
+            return True, f"подозрительный бот @{name}"
+        try:
+            chat = await bot.get_chat(name if name.startswith("@") else f"@{name}")
+            if getattr(chat, "is_scam", False) or getattr(chat, "is_fake", False):
+                return True, f"Telegram пометил @{getattr(chat, 'username', name)} как SCAM/FAKE"
+        except Exception:
+            pass
     return False, ""
 
 def split_into_chunks(text: str) -> list[str]:
@@ -2700,7 +2978,7 @@ async def show_instruction(callback: types.CallbackQuery):
         _sub_notified[user_id] = time.time()
         text = premium(
             "<b>📢 Для доступа к инструкции необходима подписка на канал!</b>\n\n"
-            "Подпишитесь на @XrayGramSociety.\n\n"
+            "Подпишитесь на @NovoeTelegram.\n\n"
             "<i>После подписки инструкция придёт сюда автоматически в течение 5 секунд.</i>"
         )
         try:
@@ -2888,6 +3166,45 @@ async def toggle_scam_check(callback: types.CallbackQuery):
 
 
 # ===== Подменю: Онлайн мод =====
+
+def link_guard_menu_keyboard(user_id: int):
+    on = get_link_guard(user_id)
+    status = "Включена" if on else "Выключена"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"Статус: {status}", callback_data="toggle_link_guard")],
+        [InlineKeyboardButton(text="Назад", callback_data="settings", style="danger", icon_custom_emoji_id="5877536313623711363")],
+    ])
+
+
+def get_link_guard_menu_text(user_id):
+    on = get_link_guard(user_id)
+    return premium(
+        "<b>Подозрительные ссылки</b>\n\n"
+        f"<b>Статус:</b> {'Включена' if on else 'Выключена'}\n\n"
+        "Когда включено, бот в личных чатах:\n"
+        "• ищет фишинг / короткие ссылки / invite-ссылки\n"
+        "• проверяет упоминания подозрительных ботов\n"
+        "• <b>удаляет</b> такое сообщение\n"
+        "• пишет предупреждение прямо в чат"
+    )
+
+
+@dp.callback_query(lambda c: c.data == "link_guard_menu")
+async def link_guard_menu(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    await safe_edit_or_send(callback.message, get_link_guard_menu_text(user_id), link_guard_menu_keyboard(user_id))
+    await callback.answer()
+
+
+@dp.callback_query(lambda c: c.data == "toggle_link_guard")
+async def toggle_link_guard(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    new_state = not get_link_guard(user_id)
+    set_link_guard(user_id, new_state)
+    await safe_edit_or_send(callback.message, get_link_guard_menu_text(user_id), link_guard_menu_keyboard(user_id))
+    await callback.answer("Включено" if new_state else "Выключено")
+
+
 @dp.callback_query(lambda c: c.data == "online_mode_menu")
 async def online_mode_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -3695,7 +4012,7 @@ async def handle_business_message(message: types.Message):
 
     if not is_owner and sender_id and db.get_scam_check(user_id):
         try:
-            is_scam, reason = await check_scam(sender_id)
+            is_scam, reason = await check_scam(sender_id, message.from_user)
             if is_scam:
                 await bot.send_message(
                     user_id,
@@ -3710,6 +4027,49 @@ async def handle_business_message(message: types.Message):
                 logger.info(f"[SCAM] {sender_id} помечен: {reason}")
         except Exception as e:
             logger.error(f"[SCAM] Ошибка проверки: {e}")
+
+    if not is_owner and get_link_guard(user_id) and (message.text or message.caption):
+        try:
+            bad, why = analyze_suspicious_content(message)
+            if not bad:
+                bad, why = await analyze_suspicious_bots_in_message(message)
+            if bad:
+                try:
+                    await bot.delete_business_messages(
+                        business_connection_id=bc_id,
+                        message_ids=[message.message_id],
+                    )
+                except Exception as e:
+                    logger.warning(f"[LINK_GUARD] delete: {e}")
+                try:
+                    await bot.send_message(
+                        chat_id,
+                        premium(
+                            f"<b>⚠️ Подозрительное сообщение удалено</b>\n\n"
+                            f"Причина: {html.escape(why)}\n"
+                            f"От: {format_user_info(message.from_user)}"
+                        ),
+                        parse_mode="HTML",
+                        business_connection_id=bc_id,
+                    )
+                except Exception as e:
+                    logger.error(f"[LINK_GUARD] warn chat: {e}")
+                try:
+                    await bot.send_message(
+                        user_id,
+                        premium(
+                            f"<b>🛡 Link Guard</b>\n\n"
+                            f"Удалено в чате <code>{chat_id}</code>\n"
+                            f"{html.escape(why)}"
+                        ),
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+                logger.info(f"[LINK_GUARD] {sender_id}: {why}")
+                return
+        except Exception as e:
+            logger.error(f"[LINK_GUARD] {e}")
 
     if not is_owner and message.text and not message.text.startswith('.'):
         try:
@@ -3836,6 +4196,10 @@ async def handle_business_message(message: types.Message):
                 parse_mode="HTML",
                 business_connection_id=bc_id
             )
+            return
+
+        if text == ".info":
+            await cmd_info_account(chat_id, bc_id, message)
             return
 
         if text == ".snos":
