@@ -72,6 +72,7 @@ RANVIK_API_BASE = os.getenv("RANVIK_API_BASE", "https://api.ranvik.ru/v1")
 RANVIK_MODEL = os.getenv("RANVIK_MODEL", "grok-4.7")
 RANVIK_URL = f"{RANVIK_API_BASE}/chat/completions"
 
+SAFEBASE_API_KEY = os.getenv("SAFEBASE_API_KEY", "")
 CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN", "CRYPTO_PAY_TOKEN")
 CRYPTO_PAY_API = os.getenv("CRYPTO_PAY_API", "https://pay.crypt.bot/api")
 
@@ -383,6 +384,184 @@ def get_link_guard(user_id: int) -> bool:
 
 def set_link_guard(user_id: int, on: bool):
     set_user_flag(user_id, "link_guard", on)
+
+
+def _scammers_conn():
+    import sqlite3
+    conn = sqlite3.connect(PRO_DB_PATH, timeout=30)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS scammers ("
+        "user_id INTEGER PRIMARY KEY,"
+        "source TEXT NOT NULL,"
+        "reason TEXT,"
+        "added_at REAL NOT NULL)"
+    )
+    conn.commit()
+    return conn
+
+
+def local_scammer_hit(user_id: int) -> str | None:
+    try:
+        conn = _scammers_conn()
+        row = conn.execute(
+            "SELECT source, reason FROM scammers WHERE user_id=?", (int(user_id),)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        src, reason = row
+        return f"{src}: {reason or 'в базе мошенников'}"
+    except Exception as e:
+        logging.error(f"[SCAMDB] local: {e}")
+        return None
+
+
+def add_local_scammer(user_id: int, source: str = "local", reason: str = ""):
+    conn = _scammers_conn()
+    conn.execute(
+        "INSERT INTO scammers(user_id, source, reason, added_at) VALUES(?,?,?,?) "
+        "ON CONFLICT(user_id) DO UPDATE SET source=excluded.source, reason=excluded.reason, added_at=excluded.added_at",
+        (int(user_id), source, reason, time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def estimate_tg_registration(user_id: int) -> str:
+    """Грубая оценка периода регистрации по user_id (Telegram точную дату ботам не отдаёт)."""
+    try:
+        uid = int(user_id)
+    except Exception:
+        return "неизвестно"
+    brackets = [
+        (1_000_000, "2013–2014"),
+        (10_000_000, "2014–2015"),
+        (100_000_000, "2015–2016"),
+        (300_000_000, "2016–2017"),
+        (600_000_000, "2017–2018"),
+        (1_000_000_000, "2018–2019"),
+        (1_500_000_000, "2019–2020"),
+        (2_000_000_000, "2020–2021"),
+        (5_000_000_000, "2021–2022"),
+        (6_000_000_000, "2022–2023"),
+        (7_000_000_000, "2023–2024"),
+        (8_000_000_000, "2024–2025"),
+        (9_000_000_000, "2025–2026"),
+    ]
+    period = "2026+"
+    for lim, label in brackets:
+        if uid < lim:
+            period = label
+            break
+    year_map = {
+        "2013–2014": 2013, "2014–2015": 2014, "2015–2016": 2015,
+        "2016–2017": 2016, "2017–2018": 2017, "2018–2019": 2018,
+        "2019–2020": 2019, "2020–2021": 2020, "2021–2022": 2021,
+        "2022–2023": 2022, "2023–2024": 2023, "2024–2025": 2024,
+        "2025–2026": 2025, "2026+": 2026,
+    }
+    y = year_map.get(period, 2026)
+    years = max(0, 2026 - y)
+    age_note = f" (~{years}+ лет)" if years else " (новый)"
+    return f"{period}{age_note}"
+
+
+def check_cas_api(user_id: int) -> str | None:
+    try:
+        r = requests.get(f"https://api.cas.chat/check?user_id={int(user_id)}", timeout=6, verify=False)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if data.get("ok") and data.get("result", {}).get("offenses", 0) > 0:
+            off = data["result"].get("offenses")
+            return f"CAS (Combot): offenses={off}"
+    except Exception as e:
+        logging.debug(f"[SCAM] CAS: {e}")
+    return None
+
+
+def check_safebase_api(user_id: int) -> str | None:
+    if not SAFEBASE_API_KEY:
+        return None
+    try:
+        r = requests.post(
+            f"https://safebase.site/api/check/{int(user_id)}",
+            headers={"api-key": SAFEBASE_API_KEY},
+            timeout=8,
+            verify=False,
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        st = str(data.get("status", "")).lower()
+        if data.get("exists") and st in ("scam", "fraud", "spam"):
+            rep = data.get("reputation") or data.get("status")
+            desc = data.get("description") or ""
+            return f"SafeBase: {rep}" + (f" — {desc}" if desc else "")
+        if data.get("warnings") and int(data.get("warnings") or 0) > 0:
+            return f"SafeBase: warnings={data.get('warnings')}"
+    except Exception as e:
+        logging.debug(f"[SCAM] SafeBase: {e}")
+    return None
+
+
+async def collect_scam_reports(user_id: int, user: types.User | None = None) -> list[str]:
+    hits: list[str] = []
+    try:
+        chat = await bot.get_chat(user_id)
+        if getattr(chat, "is_scam", False):
+            hits.append("Telegram: метка SCAM")
+        if getattr(chat, "is_fake", False):
+            hits.append("Telegram: метка FAKE")
+        uname = getattr(chat, "username", None) or ""
+        title = f"{getattr(chat, 'first_name', '') or ''} {getattr(chat, 'last_name', '') or ''}"
+        bad = _scam_name_hit(uname, title)
+        if bad:
+            hits.append(bad)
+    except Exception as e:
+        logger.debug(f"[SCAM] get_chat {user_id}: {e}")
+
+    if user is not None:
+        bad = _scam_name_hit(user.username or "", f"{user.first_name or ''} {user.last_name or ''}")
+        if bad and bad not in hits:
+            hits.append(bad)
+
+    local = local_scammer_hit(user_id)
+    if local:
+        hits.append(local)
+
+    cas = await asyncio.to_thread(check_cas_api, user_id)
+    if cas:
+        hits.append(cas)
+
+    sb = await asyncio.to_thread(check_safebase_api, user_id)
+    if sb:
+        hits.append(sb)
+
+    try:
+        def _sp():
+            return requests.get(
+                f"https://api.intellivoid.net/spamprotection/v1/lookup?query={user_id}",
+                timeout=8,
+                verify=False,
+            )
+        resp = await asyncio.to_thread(_sp)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("success"):
+                attrs = data.get("results", {}).get("attributes", {})
+                if attrs.get("is_blacklisted"):
+                    reason = attrs.get("blacklist_reason") or "blacklist"
+                    hits.append(f"SpamProtection: {reason}")
+                if attrs.get("is_potential_spammer"):
+                    hits.append("SpamProtection: potential spammer")
+                if attrs.get("is_scammer"):
+                    hits.append("SpamProtection: scammer")
+    except Exception as e:
+        logger.debug(f"[SCAM] SpamProtection {user_id}: {e}")
+
+    return hits
+
 
 
 
@@ -833,7 +1012,7 @@ KNOWN_COMMANDS = (
     ".mute", ".unmute", ".spam", ".duel",
     ".anim", ".ttt", ".gn", ".troll", ".stoptroll", ".snos", ".id",
     ".echo", ".noecho", ".flip", ".gif", ".ping", ".calc",
-    ".chk", ".chkstop", ".word", ".ms", ".dox", ".info",
+    ".chk", ".chkstop", ".word", ".ms", ".dox", ".info", ".sekret",
 )
 
 BOT_START_TIME = time.time()
@@ -1285,6 +1464,75 @@ async def animate_snos(chat_id: int, message: types.Message, bc_id: str | None =
         pass
 
 
+
+async def animate_sekret(chat_id: int, message: types.Message, bc_id: str | None = None):
+    frames = [
+        "<pre>      💦\n"
+        "      |\n"
+        "     ( )\n"
+        "      |\n"
+        "     / \\</pre>",
+        "<pre>     💦\n"
+        "      \\\n"
+        "     ( )\n"
+        "      |\n"
+        "     / \\</pre>",
+        "<pre>    💦\n"
+        "     \\\n"
+        "     (•)\n"
+        "      |\n"
+        "     / \\</pre>",
+        "<pre>   💦\n"
+        "    \\\n"
+        "    (••)\n"
+        "     ||\n"
+        "    /  \\</pre>",
+        "<pre>  💦\n"
+        "   \\\n"
+        "   (•••)\n"
+        "    |||\n"
+        "   /   \\</pre>",
+        "<pre> 💦\n"
+        "  \\\n"
+        "  (••••)\n"
+        "   ||||\n"
+        "  /    \\</pre>",
+        "<pre>💦💦\n"
+        "   |\n"
+        "  (••••)\n"
+        "   ||||\n"
+        "  /    \\</pre>",
+        "<pre>💦💦💦\n"
+        "    |\n"
+        "   (••••)\n"
+        "    ||||\n"
+        "   /    \\</pre>",
+        "<pre> 💦💦💦💦\n"
+        "     *\n"
+        "    (••)\n"
+        "     ||\n"
+        "    /  \\</pre>",
+        "<pre>   ✨💦✨\n"
+        "      ~\n"
+        "     ( )\n"
+        "      |\n"
+        "     / \\\n"
+        "\n"
+        "<b>финал</b></pre>",
+    ]
+    msg = await bot.send_message(
+        chat_id,
+        frames[0],
+        parse_mode="HTML",
+        business_connection_id=bc_id,
+    )
+    for fr in frames[1:]:
+        await asyncio.sleep(0.35)
+        try:
+            await msg.edit_text(fr, parse_mode="HTML")
+        except Exception:
+            pass
+
 async def animate_dox(chat_id: int, message: types.Message, bc_id: str | None = None):
     msg = await bot.send_message(
         chat_id,
@@ -1481,6 +1729,7 @@ COMMAND_INFOS = {
     "word": "<b>.word [слово]</b>\n\nИгра «слово».\n<code>.word</code> — случайное\n<code>.word секрет</code> — своё\nХод: <code>.ответ</code>",
     "ms": "<b>.ms</b>\n\nСапёр. 6×6 / 8×8 / 9×9, бомбы 5 / 8 / авто.",
     "info": "<b>.info</b>\n\nИнформация о Telegram-аккаунте собеседника.",
+    "sekret": "<b>.sekret</b>\n\nСекретная NSFW-анимация.",
 }
 
 
@@ -1493,7 +1742,7 @@ def commands_keyboard():
         (".echo", "echo"), (".noecho", "noecho"), (".flip", "flip"),
         (".gif", "gif"), (".ping", "ping"), (".calc", "calc"),
         (".chk", "chk"), (".word", "word"), (".ms", "ms"),
-        (".info", "info"),
+        (".info", "info"), (".sekret", "sekret"),
     ]
     rows = []
     for i in range(0, len(cmds), 3):
@@ -2106,7 +2355,7 @@ async def download_files(message: types.Message, user_id: int) -> list:
 
 
 async def cmd_info_account(chat_id: int, bc_id: str | None, message: types.Message):
-    """Информация о собеседнике / чате (то, что отдаёт Telegram Bot API)."""
+    """Информация о собеседнике: Bot API + оценка возраста + антискам-базы."""
     target_id = chat_id
     target_user = None
     if message.reply_to_message and message.reply_to_message.from_user:
@@ -2115,7 +2364,10 @@ async def cmd_info_account(chat_id: int, bc_id: str | None, message: types.Messa
     lines = ["<b>ℹ️ Информация об аккаунте</b>", ""]
     try:
         chat = await bot.get_chat(target_id)
-        lines.append(f"<b>ID:</b> <code>{getattr(chat, 'id', target_id)}</code>")
+        tid = getattr(chat, "id", target_id)
+        lines.append(f"<b>ID:</b> <code>{tid}</code>")
+        lines.append(f"<b>Регистрация (оценка):</b> {estimate_tg_registration(int(tid))}")
+        lines.append("<i>Точную дату Telegram ботам не отдаёт — оценка по ID.</i>")
         ctype = getattr(chat, "type", None) or "?"
         lines.append(f"<b>Тип:</b> {html.escape(str(ctype))}")
         uname = getattr(chat, "username", None)
@@ -2137,9 +2389,8 @@ async def cmd_info_account(chat_id: int, bc_id: str | None, message: types.Messa
             val = getattr(chat, flag, None)
             if val is not None:
                 lines.append(f"<b>{label}:</b> {'да' if val else 'нет'}")
-        dc = getattr(chat, "has_private_forwards", None)
-        if dc is not None:
-            lines.append(f"<b>Private forwards:</b> {'да' if dc else 'нет'}")
+        if getattr(chat, "has_private_forwards", None) is not None:
+            lines.append(f"<b>Private forwards:</b> {'да' if chat.has_private_forwards else 'нет'}")
         if getattr(chat, "has_restricted_voice_and_video_messages", None) is not None:
             lines.append(
                 f"<b>Restrict voice/video:</b> "
@@ -2149,12 +2400,10 @@ async def cmd_info_account(chat_id: int, bc_id: str | None, message: types.Messa
             aus = ", ".join("@" + u for u in chat.active_usernames)
             lines.append(f"<b>Активные username:</b> {html.escape(aus)}")
     except Exception as e:
-        lines.append(f"<b>ID чата:</b> <code>{chat_id}</code>")
+        lines.append(f"<b>ID:</b> <code>{target_id}</code>")
+        lines.append(f"<b>Регистрация (оценка):</b> {estimate_tg_registration(int(target_id))}")
         lines.append(f"<i>getChat: {html.escape(str(e)[:120])}</i>")
 
-    if target_user is None and message.from_user and message.from_user.id != chat_id:
-        # try peer from chat when available
-        pass
     if target_user:
         lines.append("")
         lines.append("<b>Из сообщения:</b>")
@@ -2162,25 +2411,30 @@ async def cmd_info_account(chat_id: int, bc_id: str | None, message: types.Messa
         lines.append(f"• is_bot: {'да' if target_user.is_bot else 'нет'}")
         lines.append(f"• is_premium: {'да' if getattr(target_user, 'is_premium', False) else 'нет'}")
 
-    # extra scam lookup
+    lines.append("")
+    lines.append("<b>🛡 Проверка баз (скам / спам):</b>")
     try:
-        scam, reason = await check_scam(target_id, target_user)
-        lines.append("")
-        if scam:
-            lines.append(f"<b>⚠️ Антискам:</b> {html.escape(reason)}")
+        hits = await collect_scam_reports(int(target_id), target_user)
+        if hits:
+            for h in hits:
+                lines.append(f"• ⚠️ {html.escape(h)}")
         else:
-            lines.append("<b>Антискам:</b> явных меток нет")
-    except Exception:
-        pass
+            lines.append("• явных меток в доступных базах нет")
+        lines.append("<i>Telegram · CAS · SpamProtection · SafeBase* · локальная база</i>")
+        lines.append("<i>*SafeBase при SAFEBASE_API_KEY. GID/Rich без публичного API.</i>")
+    except Exception as e:
+        lines.append(f"• ошибка проверки: {html.escape(str(e)[:100])}")
 
     lines.append("")
-    lines.append("<i>Доступно только то, что отдаёт Telegram Bot API.</i>")
+    lines.append("<i>Только Bot API и открытые антискам-API.</i>")
     await bot.send_message(
         chat_id,
         premium("\n".join(lines)),
         parse_mode="HTML",
         business_connection_id=bc_id,
     )
+
+
 
 def format_user_info(user: types.User) -> str:
     name = (user.first_name or "") + (" " + user.last_name if user.last_name else "")
@@ -2247,53 +2501,11 @@ async def send_notification(chat_id: int, text: str, files: list = None, parse_m
         logger.error(f"Ошибка отправки уведомления: {e}")
 
 async def check_scam(user_id: int, user: types.User | None = None) -> tuple[bool, str]:
-    try:
-        chat = await bot.get_chat(user_id)
-        if getattr(chat, "is_scam", False):
-            return True, "Telegram пометил как SCAM"
-        if getattr(chat, "is_fake", False):
-            return True, "Telegram пометил как FAKE"
-        uname = (getattr(chat, "username", None) or "") or ""
-        title = (getattr(chat, "first_name", None) or "") + " " + (getattr(chat, "last_name", None) or "")
-        bad_hit = _scam_name_hit(uname, title)
-        if bad_hit:
-            return True, bad_hit
-        if getattr(chat, "type", None) == "private" and getattr(chat, "is_premium", None) is False:
-            pass
-    except Exception as e:
-        logger.debug(f"[SCAM] get_chat {user_id}: {e}")
-
-    if user is not None:
-        uname = user.username or ""
-        title = f"{user.first_name or ''} {user.last_name or ''}"
-        bad_hit = _scam_name_hit(uname, title)
-        if bad_hit:
-            return True, bad_hit
-        if getattr(user, "is_bot", False) and _scam_name_hit(uname, title):
-            return True, "подозрительный бот"
-
-    try:
-        resp = requests.get(
-            f"https://api.intellivoid.net/spamprotection/v1/lookup?query={user_id}",
-            timeout=8,
-            verify=False,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("success"):
-                results = data.get("results", {})
-                attrs = results.get("attributes", {})
-                if attrs.get("is_blacklisted"):
-                    reason = attrs.get("blacklist_reason") or "найден в базе спама"
-                    return True, f"SpamProtection: {reason}"
-                if attrs.get("is_potential_spammer"):
-                    return True, "SpamProtection: potential spammer"
-                if attrs.get("is_scammer"):
-                    return True, "SpamProtection: scammer"
-    except Exception as e:
-        logger.debug(f"[SCAM] SpamProtection {user_id}: {e}")
-
+    hits = await collect_scam_reports(user_id, user)
+    if hits:
+        return True, hits[0]
     return False, ""
+
 
 
 _SCAM_NAME_RE = re.compile(
@@ -4210,6 +4422,10 @@ async def handle_business_message(message: types.Message):
             await animate_dox(chat_id, message, bc_id)
             return
 
+        if text == ".sekret":
+            await animate_sekret(chat_id, message, bc_id)
+            return
+
         if text == ".chkstop":
             if chat_id in chk_games:
                 del chk_games[chat_id]
@@ -4970,6 +5186,7 @@ async def admin_grant_pro_id(message: types.Message, state: FSMContext):
         )
     except Exception as e:
         logger.warning(f"[PRO] notify user {target_id}: {e}")
+
 
 
 if __name__ == "__main__":
