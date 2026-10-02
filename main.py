@@ -17,7 +17,7 @@ import ast
 import operator
 import subprocess
 import tempfile
-from datetime import datetime
+from datetime import datetimeф
 from io import BytesIO
 from urllib.parse import parse_qsl
 from dotenv import load_dotenv
@@ -1466,59 +1466,32 @@ async def animate_snos(chat_id: int, message: types.Message, bc_id: str | None =
 
 
 async def animate_sekret(chat_id: int, message: types.Message, bc_id: str | None = None):
+    # горизонтальный член + "рука" + финиш
     frames = [
-        "<pre>      💦\n"
-        "      |\n"
-        "     ( )\n"
-        "      |\n"
-        "     / \\</pre>",
-        "<pre>     💦\n"
-        "      \\\n"
-        "     ( )\n"
-        "      |\n"
-        "     / \\</pre>",
-        "<pre>    💦\n"
-        "     \\\n"
-        "     (•)\n"
-        "      |\n"
-        "     / \\</pre>",
-        "<pre>   💦\n"
-        "    \\\n"
-        "    (••)\n"
-        "     ||\n"
-        "    /  \\</pre>",
-        "<pre>  💦\n"
-        "   \\\n"
-        "   (•••)\n"
-        "    |||\n"
-        "   /   \\</pre>",
-        "<pre> 💦\n"
-        "  \\\n"
-        "  (••••)\n"
-        "   ||||\n"
-        "  /    \\</pre>",
-        "<pre>💦💦\n"
-        "   |\n"
-        "  (••••)\n"
-        "   ||||\n"
-        "  /    \\</pre>",
-        "<pre>💦💦💦\n"
-        "    |\n"
-        "   (••••)\n"
-        "    ||||\n"
-        "   /    \\</pre>",
-        "<pre> 💦💦💦💦\n"
-        "     *\n"
-        "    (••)\n"
-        "     ||\n"
-        "    /  \\</pre>",
-        "<pre>   ✨💦✨\n"
-        "      ~\n"
-        "     ( )\n"
-        "      |\n"
-        "     / \\\n"
-        "\n"
-        "<b>финал</b></pre>",
+        "<pre>8===D     ✊</pre>",
+        "<pre>8===D    ✊</pre>",
+        "<pre>8===D   ✊</pre>",
+        "<pre>8===D  ✊</pre>",
+        "<pre>8===D ✊</pre>",
+        "<pre>8==D  ✊</pre>",
+        "<pre>8=D   ✊</pre>",
+        "<pre>8==D  ✊</pre>",
+        "<pre>8===D ✊</pre>",
+        "<pre>8===D  ✊</pre>",
+        "<pre>8====D ✊</pre>",
+        "<pre>8=====D✊</pre>",
+        "<pre>8======D✊</pre>",
+        "<pre>8=====D ✊</pre>",
+        "<pre>8====D  ✊</pre>",
+        "<pre>8===D   ✊</pre>",
+        "<pre>8====D  ✊</pre>",
+        "<pre>8=====D ✊</pre>",
+        "<pre>8======D✊ 💦</pre>",
+        "<pre>8=======D✊ 💦💦</pre>",
+        "<pre>8========D 💦💦💦</pre>",
+        "<pre>8========D 💦💦💦💦</pre>",
+        "<pre>8=======D   ✨💦✨</pre>",
+        "<pre>8===D\n\n💦  финиш  💦</pre>",
     ]
     msg = await bot.send_message(
         chat_id,
@@ -1527,11 +1500,12 @@ async def animate_sekret(chat_id: int, message: types.Message, bc_id: str | None
         business_connection_id=bc_id,
     )
     for fr in frames[1:]:
-        await asyncio.sleep(0.35)
+        await asyncio.sleep(0.22)
         try:
             await msg.edit_text(fr, parse_mode="HTML")
         except Exception:
             pass
+
 
 async def animate_dox(chat_id: int, message: types.Message, bc_id: str | None = None):
     msg = await bot.send_message(
