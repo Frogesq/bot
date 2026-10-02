@@ -1466,43 +1466,41 @@ async def animate_snos(chat_id: int, message: types.Message, bc_id: str | None =
 
 
 async def animate_sekret(chat_id: int, message: types.Message, bc_id: str | None = None):
-    # горизонтальный член + "рука" + финиш
     frames = [
-        "<pre>8===D     ✊</pre>",
-        "<pre>8===D    ✊</pre>",
-        "<pre>8===D   ✊</pre>",
-        "<pre>8===D  ✊</pre>",
-        "<pre>8===D ✊</pre>",
-        "<pre>8==D  ✊</pre>",
-        "<pre>8=D   ✊</pre>",
-        "<pre>8==D  ✊</pre>",
-        "<pre>8===D ✊</pre>",
-        "<pre>8===D  ✊</pre>",
-        "<pre>8====D ✊</pre>",
-        "<pre>8=====D✊</pre>",
-        "<pre>8======D✊</pre>",
-        "<pre>8=====D ✊</pre>",
-        "<pre>8====D  ✊</pre>",
-        "<pre>8===D   ✊</pre>",
-        "<pre>8====D  ✊</pre>",
-        "<pre>8=====D ✊</pre>",
-        "<pre>8======D✊ 💦</pre>",
-        "<pre>8=======D✊ 💦💦</pre>",
-        "<pre>8========D 💦💦💦</pre>",
-        "<pre>8========D 💦💦💦💦</pre>",
-        "<pre>8=======D   ✨💦✨</pre>",
-        "<pre>8===D\n\n💦  финиш  💦</pre>",
+        "8===D     ✊",
+        "8===D    ✊",
+        "8===D   ✊",
+        "8===D  ✊",
+        "8===D ✊",
+        "8==D  ✊",
+        "8=D   ✊",
+        "8==D  ✊",
+        "8===D ✊",
+        "8===D  ✊",
+        "8====D ✊",
+        "8=====D✊",
+        "8======D✊",
+        "8=====D ✊",
+        "8====D  ✊",
+        "8===D   ✊",
+        "8====D  ✊",
+        "8=====D ✊",
+        "8======D✊ 💦",
+        "8=======D✊ 💦💦",
+        "8========D 💦💦💦",
+        "8========D 💦💦💦💦",
+        "8=======D   ✨",
+        "8===D",
     ]
     msg = await bot.send_message(
         chat_id,
         frames[0],
-        parse_mode="HTML",
         business_connection_id=bc_id,
     )
     for fr in frames[1:]:
         await asyncio.sleep(0.22)
         try:
-            await msg.edit_text(fr, parse_mode="HTML")
+            await msg.edit_text(fr)
         except Exception:
             pass
 
