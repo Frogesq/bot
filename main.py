@@ -60,7 +60,7 @@ INSTRUCTION_IMAGE_PATH = os.path.join(BASE_DIR, "instruction.jpg")
 BANNER_PATH = os.path.join(BASE_DIR, "banner.png")
 MINI_APP_DIR = os.path.join(BASE_DIR, "mini_app")
 MINI_APP_URL = "https://xraygram.bothost.tech"
-CHANNEL_USERNAME = "@NovoeTelegram"
+CHANNEL_USERNAME = "@XrayGramSociety"
 BOT_USERNAME = "XrayGramRobot"
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
@@ -1623,7 +1623,7 @@ def main_menu_keyboard(is_admin: bool = False):
         [InlineKeyboardButton(text="Заработать звёзды", callback_data="referral_menu", icon_custom_emoji_id="5258185631355378853")],
         [
             InlineKeyboardButton(text="Mini App", web_app=WebAppInfo(url=MINI_APP_URL), icon_custom_emoji_id="5280867942056108177"),
-            InlineKeyboardButton(text="Канал", url="https://t.me/NovoeTelegram", icon_custom_emoji_id="5260268501515377807"),
+            InlineKeyboardButton(text="Канал", url="https://t.me/XrayGramSociety", icon_custom_emoji_id="5260268501515377807"),
         ],
     ]
     if is_admin:
@@ -1633,7 +1633,7 @@ def main_menu_keyboard(is_admin: bool = False):
 
 def subscription_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Подписаться на канал", url="https://t.me/NovoeTelegram")]
+        [InlineKeyboardButton(text="📢 Подписаться на канал", url="https://t.me/XrayGramSociety")]
     ])
 
 
@@ -2001,7 +2001,7 @@ async def ensure_subscription(user_id: int, notify: bool = True, force_notify: b
             user_id,
             premium(
                 "<b>📢 Для использования функций бота необходима подписка на наш канал!</b>\n\n"
-                "Подпишитесь на @NovoeTelegram, чтобы пользоваться всеми возможностями XrayGram.\n\n"
+                "Подпишитесь на @XrayGramSociety, чтобы пользоваться всеми возможностями XrayGram.\n\n"
                 "<i>После подписки функции включатся автоматически.</i>"
             ),
             parse_mode="HTML",
@@ -3162,7 +3162,7 @@ async def show_instruction(callback: types.CallbackQuery):
         _sub_notified[user_id] = time.time()
         text = premium(
             "<b>📢 Для доступа к инструкции необходима подписка на канал!</b>\n\n"
-            "Подпишитесь на @NovoeTelegram.\n\n"
+            "Подпишитесь на @XrayGramSociety.\n\n"
             "<i>После подписки инструкция придёт сюда автоматически в течение 5 секунд.</i>"
         )
         try:
