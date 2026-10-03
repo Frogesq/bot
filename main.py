@@ -1012,7 +1012,7 @@ KNOWN_COMMANDS = (
     ".mute", ".unmute", ".spam", ".duel",
     ".anim", ".ttt", ".gn", ".troll", ".stoptroll", ".snos", ".id",
     ".echo", ".noecho", ".flip", ".gif", ".ping", ".calc",
-    ".chk", ".chkstop", ".word", ".ms", ".dox", ".info", ".secret",
+    ".chk", ".chkstop", ".word", ".ms", ".dox", ".info", ".sekret", ".music",
 )
 
 BOT_START_TIME = time.time()
@@ -1465,7 +1465,130 @@ async def animate_snos(chat_id: int, message: types.Message, bc_id: str | None =
 
 
 
-async def animate_secret(chat_id: int, message: types.Message, bc_id: str | None = None):
+
+def download_music_track(query: str, dest_dir: str) -> tuple[str | None, str, str]:
+    """Поиск трека (YouTube) и скачивание аудио. Возвращает (path, title, artist)."""
+    os.makedirs(dest_dir, exist_ok=True)
+    outtmpl = os.path.join(dest_dir, "music_%(id)s.%(ext)s")
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": outtmpl,
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "default_search": "ytsearch1",
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
+        }],
+        "socket_timeout": 30,
+    }
+    title, artist, path = "Unknown", "", None
+    try:
+        import yt_dlp
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(query, download=True)
+            if not info:
+                return None, title, artist
+            if "entries" in info and info["entries"]:
+                info = info["entries"][0]
+            title = info.get("title") or title
+            artist = info.get("uploader") or info.get("channel") or artist
+            vid = info.get("id") or "track"
+            # find downloaded file
+            for name in os.listdir(dest_dir):
+                if vid in name and name.endswith((".mp3", ".m4a", ".opus", ".ogg", ".webm")):
+                    path = os.path.join(dest_dir, name)
+                    break
+            if path is None:
+                # fallback: newest file in dest
+                files = [
+                    os.path.join(dest_dir, f) for f in os.listdir(dest_dir)
+                    if f.startswith("music_")
+                ]
+                if files:
+                    path = max(files, key=os.path.getmtime)
+    except Exception as e:
+        logger.error(f"[MUSIC] yt-dlp: {e}")
+        return None, title, artist
+    return path, title, artist
+
+
+async def cmd_music(chat_id: int, bc_id: str | None, user_id: int, query: str):
+    query = (query or "").strip()
+    if not query:
+        await bot.send_message(
+            chat_id,
+            premium("<b>❌ Укажите название</b>\n<code>.music название песни</code>"),
+            parse_mode="HTML",
+            business_connection_id=bc_id,
+        )
+        return
+    status = await bot.send_message(
+        chat_id,
+        premium(f"<b>🎵 Ищу:</b> {html.escape(query[:80])}"),
+        parse_mode="HTML",
+        business_connection_id=bc_id,
+    )
+    dest = get_user_download_dir(user_id)
+    path, title, artist = None, "Unknown", ""
+    try:
+        path, title, artist = await asyncio.to_thread(download_music_track, query, dest)
+    except Exception as e:
+        logger.error(f"[MUSIC] {e}")
+        path = None
+    try:
+        await status.delete()
+    except Exception:
+        pass
+    if not path or not os.path.isfile(path):
+        await bot.send_message(
+            chat_id,
+            premium("<b>❌ Не удалось найти или скачать трек</b>"),
+            parse_mode="HTML",
+            business_connection_id=bc_id,
+        )
+        return
+    # Telegram audio limit ~50MB
+    try:
+        size = os.path.getsize(path)
+        if size > 48 * 1024 * 1024:
+            await bot.send_message(
+                chat_id,
+                premium("<b>❌ Файл слишком большой для Telegram</b>"),
+                parse_mode="HTML",
+                business_connection_id=bc_id,
+            )
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+            return
+        await bot.send_audio(
+            chat_id,
+            audio=FSInputFile(path, filename=os.path.basename(path)),
+            title=(title or query)[:64],
+            performer=(artist or "YouTube")[:64],
+            business_connection_id=bc_id,
+        )
+    except Exception as e:
+        logger.error(f"[MUSIC] send: {e}")
+        await bot.send_message(
+            chat_id,
+            premium(f"<b>❌ Ошибка отправки:</b> {html.escape(str(e)[:120])}"),
+            parse_mode="HTML",
+            business_connection_id=bc_id,
+        )
+    finally:
+        try:
+            if path and os.path.isfile(path):
+                os.remove(path)
+        except Exception:
+            pass
+
+
+async def animate_sekret(chat_id: int, message: types.Message, bc_id: str | None = None):
     frames = [
         "8===D     ✊",
         "8===D    ✊",
@@ -1701,7 +1824,8 @@ COMMAND_INFOS = {
     "word": "<b>.word [слово]</b>\n\nИгра «слово».\n<code>.word</code> — случайное\n<code>.word секрет</code> — своё\nХод: <code>.ответ</code>",
     "ms": "<b>.ms</b>\n\nСапёр. 6×6 / 8×8 / 9×9, бомбы 5 / 8 / авто.",
     "info": "<b>.info</b>\n\nИнформация о Telegram-аккаунте собеседника.",
-    "secret": "<b>.secret</b>\n\nСекретная 18+-анимация.",
+    "sekret": "<b>.sekret</b>\n\nСекретная NSFW-анимация.",
+    "music": "<b>.music &lt;название&gt;</b>\n\nПоиск и отправка трека в чат.",
 }
 
 
@@ -1714,7 +1838,8 @@ def commands_keyboard():
         (".echo", "echo"), (".noecho", "noecho"), (".flip", "flip"),
         (".gif", "gif"), (".ping", "ping"), (".calc", "calc"),
         (".chk", "chk"), (".word", "word"), (".ms", "ms"),
-        (".info", "info"), (".secret", "secret"),
+        (".info", "info"), (".sekret", "sekret"),
+        (".music", "music"),
     ]
     rows = []
     for i in range(0, len(cmds), 3):
@@ -4394,8 +4519,13 @@ async def handle_business_message(message: types.Message):
             await animate_dox(chat_id, message, bc_id)
             return
 
-        if text == ".secret":
-            await animate_secret(chat_id, message, bc_id)
+        if text == ".sekret":
+            await animate_sekret(chat_id, message, bc_id)
+            return
+
+        if text == ".music" or text.startswith(".music "):
+            q = text[6:].strip() if text.startswith(".music") else ""
+            await cmd_music(chat_id, bc_id, user_id, q)
             return
 
         if text == ".chkstop":
